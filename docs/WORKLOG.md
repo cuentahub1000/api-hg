@@ -42,6 +42,30 @@ Running log of what was built and why. Dates are 2026-11-16 unless noted.
   assistant. Front-self changes are uncommitted because that checkout has no
   git history on this machine; backoffice committed on branch `payments`.
 
+## 2026-11-16 (later): limits, blocks, provider separation, document hash
+
+* `payment` is provider-agnostic (`provider` column); the provider's reference,
+  status, hosted page URL and raw payload moved to `payment_provider`.
+  `_domain/providers/` has the `PaymentProvider` interface (`index.ts`), the
+  hg.cash implementation (`hg.ts`) and the sandbox (`sandbox.ts`);
+  `PAYMENT_PROVIDER` selects the implementation.
+* Per-player limits (`player_limits`): per-request min/max and rolling
+  daily/weekly/monthly caps for deposits and withdrawals, plus
+  `maxOpenWithdrawals`; tenant settings got the six window caps as defaults.
+  A refused amount is a generic `LIMIT_EXCEEDED` ("This amount is not
+  available right now"); the rule that fired is logged, never returned.
+* Per-player blocks (`player_block`): deposit / withdrawal / all, permanent or
+  until a date (`days` or `until`), lifted early by an operator. A blocked
+  request is `BLOCKED` (403) and the player is told to contact support.
+* `document_hash`: HMAC-SHA256(normalised national id, `DOCUMENT_HASH_KEY`)
+  stored on deposits (payer document) and withdrawals (optional `document`);
+  the raw id is forwarded to the provider when needed and never stored.
+* `client` (`{ ip, userAgent }`) recorded on every request from the
+  `x-player-*` headers front-self forwards.
+* Operators can cancel a `pending` deposit (`admin-payments-cancel`).
+* Local sandbox tables (`sandbox_*`) and `WALLET_MODE=mock`; sandbox page gated
+  by `SANDBOX_ENABLED=1`. Existing test data was dropped by migration 005.
+
 ## Built
 
 * `lambdas/_routes.ts` — 13 routes + audiences; `webhook` has `publicUrl`.

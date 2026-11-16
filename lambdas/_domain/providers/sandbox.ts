@@ -10,9 +10,9 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { db } from '../_common/db';
-import { log } from '../_common/logger';
-import type { Checkout, Payout } from './provider';
+import { db } from '../../_common/db';
+import { log } from '../../_common/logger';
+import type { Checkout, Payout } from './index';
 
 interface CheckoutRow { id: string; status: string; amount: string; country: string; payer_document: string | null; success_url: string; cancel_url: string; transaction_id: string | null; expires_at: string }
 interface PayoutRow { id: string; status: string; amount: string; destination: string; error_code: string | null; submitted_at: string }
@@ -95,7 +95,7 @@ export async function handleSandbox(method: string, pathname: string): Promise<S
   if (act && method === 'POST') {
     const co = await checkoutRow(act[1]);
     if (!co) return { status: 404, contentType: 'text/plain', body: 'unknown checkout' };
-    const { applyCheckout } = await import('./payments');
+    const { applyCheckout } = await import('../payments');
     const next = ({ pay: 'completed', review: 'awaiting_manual_review', reject: 'rejected', expire: 'expired', cancel: 'cancelled' } as Record<string, string>)[act[2]];
     if (co.status === 'pending' || (co.status === 'awaiting_manual_review' && (next === 'completed' || next === 'rejected'))) {
       const txId = next === 'completed' ? randomUUID() : co.transaction_id;
@@ -111,7 +111,7 @@ export async function handleSandbox(method: string, pathname: string): Promise<S
   if (pa && method === 'POST') {
     const po = await db.one<PayoutRow>('SELECT * FROM sandbox_payout WHERE id = $1', [pa[1]]);
     if (!po) return { status: 404, contentType: 'text/plain', body: 'unknown payout' };
-    const { applyPayout } = await import('./payments');
+    const { applyPayout } = await import('../payments');
     if (po.status === 'PROCESSING') {
       const status = pa[2] === 'done' ? 'DONE' : 'ERROR';
       const errorCode = status === 'ERROR' ? 'DESTINATION_ERROR' : null;

@@ -29,7 +29,12 @@
     "deploy:all": "cdk deploy --all --require-approval never -c config=${envName:?Set envName=<env> first} && npm run migrate",
     "migrate": "aws lambda invoke --function-name ${envName:?Set envName=<env> first}-payments-migrate --cli-binary-format raw-in-base64-out --payload '{}' /dev/stdout",
     "destroy:functions": "cdk destroy \"${envName:?Set envName=<env> first}-ApiHg*\" --exclusively -c config=$envName",
-    "destroy:all": "cdk destroy --all -c config=${envName:?Set envName=<env> first}"
+    "destroy:all": "cdk destroy --all -c config=${envName:?Set envName=<env> first}",
+    "deploy:admin-payments-cancel": "cdk deploy ${envName:?Set envName=<env> first}-ApiHgAdminPaymentsCancel -c config=$envName",
+    "deploy:admin-player-get": "cdk deploy ${envName:?Set envName=<env> first}-ApiHgAdminPlayerGet -c config=$envName",
+    "deploy:admin-player-limits-update": "cdk deploy ${envName:?Set envName=<env> first}-ApiHgAdminPlayerLimitsUpdate -c config=$envName",
+    "deploy:admin-player-block": "cdk deploy ${envName:?Set envName=<env> first}-ApiHgAdminPlayerBlock -c config=$envName",
+    "deploy:admin-player-unblock": "cdk deploy ${envName:?Set envName=<env> first}-ApiHgAdminPlayerUnblock -c config=$envName"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

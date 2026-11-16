@@ -42,7 +42,14 @@ export const ROUTES: readonly RouteSpec[] = [
   { slug: 'admin-payments-reject',  method: 'POST', resource: '/api/v1/payments/admin/payments/{id}/reject',  audience: 'operator', timeoutSec: 30 },
   { slug: 'admin-settings-get',     method: 'GET',  resource: '/api/v1/payments/admin/settings',              audience: 'operator' },
   { slug: 'admin-settings-update',  method: 'PUT',  resource: '/api/v1/payments/admin/settings',              audience: 'operator' },
+  { slug: 'admin-payments-cancel',  method: 'POST', resource: '/api/v1/payments/admin/payments/{id}/cancel',  audience: 'operator', timeoutSec: 30 },
   { slug: 'admin-reconcile',        method: 'POST', resource: '/api/v1/payments/admin/reconcile',             audience: 'operator', timeoutSec: 60 },
+
+  // --- operator: per-player limits and blocks ---------------------------
+  { slug: 'admin-player-get',           method: 'GET',  resource: '/api/v1/payments/admin/players/{partyId}',         audience: 'operator' },
+  { slug: 'admin-player-limits-update', method: 'PUT',  resource: '/api/v1/payments/admin/players/{partyId}/limits',  audience: 'operator' },
+  { slug: 'admin-player-block',         method: 'POST', resource: '/api/v1/payments/admin/players/{partyId}/blocks',  audience: 'operator' },
+  { slug: 'admin-player-unblock',       method: 'POST', resource: '/api/v1/payments/admin/players/{partyId}/blocks/{blockId}/lift', audience: 'operator' },
 
   // --- provider callback -------------------------------------------------
   { slug: 'webhook', method: 'POST', resource: '/api/v1/payments/webhook', audience: 'webhook', timeoutSec: 30, publicUrl: true },

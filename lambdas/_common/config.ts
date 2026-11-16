@@ -58,9 +58,11 @@ export interface PaymentsConfig {
   upstreamTimeoutMs: number;
   /** A pending deposit older than this is re-checked with the provider when read. */
   recheckAfterMs: number;
+  /** HMAC key for the national-id hash stored on payments; empty = store nothing. */
+  documentHashKey: string;
 }
 
-const SECRET_KEYS = ['PROVIDER_API_TOKEN', 'PROVIDER_WEBHOOK_SECRET', 'WALLET_API_KEY', 'WALLET_API_TOKEN'] as const;
+const SECRET_KEYS = ['PROVIDER_API_TOKEN', 'PROVIDER_WEBHOOK_SECRET', 'WALLET_API_KEY', 'WALLET_API_TOKEN', 'DOCUMENT_HASH_KEY'] as const;
 
 let loaded: Promise<PaymentsConfig> | undefined;
 
@@ -95,6 +97,7 @@ async function build(): Promise<PaymentsConfig> {
     cancelUrl: stripSlash(env.PAYMENTS_CANCEL_URL ?? env.PAYMENTS_RETURN_URL ?? ''),
     upstreamTimeoutMs: Number(env.PAYMENTS_UPSTREAM_TIMEOUT_MS ?? '10000') || 10000,
     recheckAfterMs: Number(env.PAYMENTS_RECHECK_AFTER_MS ?? '60000') || 60000,
+    documentHashKey: env.DOCUMENT_HASH_KEY ?? '',
   };
 
   const providerMode = (env.PROVIDER_MODE ?? 'live').toLowerCase();

@@ -1,8 +1,8 @@
 /**
  * Per-tenant hold and limit settings. The tenant is the root of the player's
  * (or operator's) chain, so one brand's holds never leak into another's. A
- * tenant with no row gets the defaults below (the same values the SQL
- * defaults carry) until a root operator saves the form once.
+ * tenant with no row gets the defaults below until a root operator saves the
+ * form once. Per-player overrides live in `players.ts`.
  */
 
 import { db } from '../_common/db';
@@ -22,12 +22,20 @@ interface Row {
   max_deposit: string;
   min_withdrawal: string;
   max_withdrawal: string;
+  daily_deposit_max: string | null;
+  weekly_deposit_max: string | null;
+  monthly_deposit_max: string | null;
+  daily_withdrawal_max: string | null;
+  weekly_withdrawal_max: string | null;
+  monthly_withdrawal_max: string | null;
   max_open_withdrawals: number;
   updated_at: string;
   updated_by: string | null;
 }
 
-export const DEFAULTS: Omit<Settings, 'currency' | 'updatedAt' | 'updatedBy'> = {
+export type WritableSettings = Omit<Settings, 'currency' | 'updatedAt' | 'updatedBy'>;
+
+export const DEFAULTS: WritableSettings = {
   depositsEnabled: true,
   withdrawalsEnabled: true,
   holdDeposits: false,
@@ -38,10 +46,21 @@ export const DEFAULTS: Omit<Settings, 'currency' | 'updatedAt' | 'updatedBy'> = 
   maxDeposit: 2_000_000,
   minWithdrawal: 1000,
   maxWithdrawal: 1_000_000,
+  dailyDepositMax: null,
+  weeklyDepositMax: null,
+  monthlyDepositMax: null,
+  dailyWithdrawalMax: null,
+  weeklyWithdrawalMax: null,
+  monthlyWithdrawalMax: null,
   maxOpenWithdrawals: 1,
 };
 
-export const WRITABLE = Object.keys(DEFAULTS) as Array<keyof typeof DEFAULTS>;
+export const WRITABLE = Object.keys(DEFAULTS) as Array<keyof WritableSettings>;
+/** Amount fields that accept `null` (= no cap). */
+export const NULLABLE_AMOUNTS: ReadonlyArray<keyof WritableSettings> = [
+  'holdDepositsAbove', 'holdWithdrawalsAbove',
+  'dailyDepositMax', 'weeklyDepositMax', 'monthlyDepositMax', 'dailyWithdrawalMax', 'weeklyWithdrawalMax', 'monthlyWithdrawalMax',
+];
 
 export async function getSettings(tenant: string): Promise<Settings> {
   const cfg = await getConfig();
@@ -58,6 +77,12 @@ export async function getSettings(tenant: string): Promise<Settings> {
     maxDeposit: money(row.max_deposit) ?? DEFAULTS.maxDeposit,
     minWithdrawal: money(row.min_withdrawal) ?? DEFAULTS.minWithdrawal,
     maxWithdrawal: money(row.max_withdrawal) ?? DEFAULTS.maxWithdrawal,
+    dailyDepositMax: money(row.daily_deposit_max),
+    weeklyDepositMax: money(row.weekly_deposit_max),
+    monthlyDepositMax: money(row.monthly_deposit_max),
+    dailyWithdrawalMax: money(row.daily_withdrawal_max),
+    weeklyWithdrawalMax: money(row.weekly_withdrawal_max),
+    monthlyWithdrawalMax: money(row.monthly_withdrawal_max),
     maxOpenWithdrawals: row.max_open_withdrawals,
     currency: cfg.currency,
     updatedAt: row.updated_at,
@@ -65,49 +90,65 @@ export async function getSettings(tenant: string): Promise<Settings> {
   };
 }
 
-/** Validate a partial body against the writable fields and persist the merge. */
-export async function updateSettings(tenant: string, body: Record<string, unknown>, by: string): Promise<Settings> {
-  const current = await getSettings(tenant);
-  const next = { ...current };
+/**
+ * Validate a partial body of amount/boolean/integer fields against `defaults`
+ * (the field list and types) and return the merged result. Shared with the
+ * per-player overrides, where every field may also be `null` ("use tenant").
+ */
+export function mergeFields<T extends Record<string, unknown>>(current: T, body: Record<string, unknown>, template: Record<string, unknown>, nullable: ReadonlyArray<string>, allNullable = false): T {
+  const next: Record<string, unknown> = { ...current };
   const errors: string[] = [];
   for (const [key, raw] of Object.entries(body)) {
-    if (!WRITABLE.includes(key as keyof typeof DEFAULTS)) { errors.push(`'${key}' is not a setting`); continue; }
-    const k = key as keyof typeof DEFAULTS;
-    const def = DEFAULTS[k];
+    if (!(key in template)) { errors.push(`'${key}' is not a setting`); continue; }
+    const def = template[key];
+    if (raw === null && (allNullable || nullable.includes(key))) { next[key] = null; continue; }
     if (typeof def === 'boolean') {
       if (typeof raw !== 'boolean') errors.push(`'${key}' must be a boolean`);
-      else (next as Record<string, unknown>)[k] = raw;
-    } else if (k === 'maxOpenWithdrawals') {
+      else next[key] = raw;
+    } else if (key === 'maxOpenWithdrawals') {
       if (!Number.isInteger(raw) || (raw as number) < 1 || (raw as number) > 50) errors.push(`'${key}' must be an integer between 1 and 50`);
-      else next.maxOpenWithdrawals = raw as number;
+      else next[key] = raw;
+    } else if (key === 'note') {
+      if (typeof raw !== 'string' || raw.length > 500) errors.push(`'${key}' must be a string of at most 500 characters`);
+      else next[key] = raw;
     } else {
-      // amounts; the two `*Above` thresholds accept null (= never)
-      if (raw === null && (k === 'holdDepositsAbove' || k === 'holdWithdrawalsAbove')) { (next as Record<string, unknown>)[k] = null; continue; }
       const n = typeof raw === 'number' ? raw : NaN;
       if (!Number.isFinite(n) || n < 0 || n > 1e12) errors.push(`'${key}' must be a non-negative amount`);
-      else (next as Record<string, unknown>)[k] = Math.round(n * 100) / 100;
+      else next[key] = Math.round(n * 100) / 100;
     }
   }
-  if (next.minDeposit > next.maxDeposit) errors.push("'minDeposit' must not exceed 'maxDeposit'");
-  if (next.minWithdrawal > next.maxWithdrawal) errors.push("'minWithdrawal' must not exceed 'maxWithdrawal'");
+  const num = (k: string) => (typeof next[k] === 'number' ? (next[k] as number) : null);
+  if (num('minDeposit') !== null && num('maxDeposit') !== null && num('minDeposit')! > num('maxDeposit')!) errors.push("'minDeposit' must not exceed 'maxDeposit'");
+  if (num('minWithdrawal') !== null && num('maxWithdrawal') !== null && num('minWithdrawal')! > num('maxWithdrawal')!) errors.push("'minWithdrawal' must not exceed 'maxWithdrawal'");
   if (errors.length) throw new ValidationError('Validation failed', errors);
+  return next as T;
+}
 
+export async function updateSettings(tenant: string, body: Record<string, unknown>, by: string): Promise<Settings> {
+  const current = await getSettings(tenant);
+  const next = mergeFields(current as unknown as Record<string, unknown>, body, DEFAULTS as unknown as Record<string, unknown>, NULLABLE_AMOUNTS as string[]) as unknown as Settings;
   const opt = (v: number | null) => (v === null ? null : moneyParam(v));
   await db.execute(
     `INSERT INTO payment_settings (tenant, deposits_enabled, withdrawals_enabled, hold_deposits, hold_deposits_above,
        hold_withdrawals, hold_withdrawals_above, min_deposit, max_deposit, min_withdrawal, max_withdrawal,
+       daily_deposit_max, weekly_deposit_max, monthly_deposit_max, daily_withdrawal_max, weekly_withdrawal_max, monthly_withdrawal_max,
        max_open_withdrawals, updated_at, updated_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now(), $13)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18, now(), $19)
      ON CONFLICT (tenant) DO UPDATE SET
        deposits_enabled = EXCLUDED.deposits_enabled, withdrawals_enabled = EXCLUDED.withdrawals_enabled,
        hold_deposits = EXCLUDED.hold_deposits, hold_deposits_above = EXCLUDED.hold_deposits_above,
        hold_withdrawals = EXCLUDED.hold_withdrawals, hold_withdrawals_above = EXCLUDED.hold_withdrawals_above,
        min_deposit = EXCLUDED.min_deposit, max_deposit = EXCLUDED.max_deposit,
        min_withdrawal = EXCLUDED.min_withdrawal, max_withdrawal = EXCLUDED.max_withdrawal,
+       daily_deposit_max = EXCLUDED.daily_deposit_max, weekly_deposit_max = EXCLUDED.weekly_deposit_max, monthly_deposit_max = EXCLUDED.monthly_deposit_max,
+       daily_withdrawal_max = EXCLUDED.daily_withdrawal_max, weekly_withdrawal_max = EXCLUDED.weekly_withdrawal_max, monthly_withdrawal_max = EXCLUDED.monthly_withdrawal_max,
        max_open_withdrawals = EXCLUDED.max_open_withdrawals, updated_at = now(), updated_by = EXCLUDED.updated_by`,
     [tenant, next.depositsEnabled, next.withdrawalsEnabled, next.holdDeposits, opt(next.holdDepositsAbove),
       next.holdWithdrawals, opt(next.holdWithdrawalsAbove), moneyParam(next.minDeposit), moneyParam(next.maxDeposit),
-      moneyParam(next.minWithdrawal), moneyParam(next.maxWithdrawal), next.maxOpenWithdrawals, by],
+      moneyParam(next.minWithdrawal), moneyParam(next.maxWithdrawal),
+      opt(next.dailyDepositMax), opt(next.weeklyDepositMax), opt(next.monthlyDepositMax),
+      opt(next.dailyWithdrawalMax), opt(next.weeklyWithdrawalMax), opt(next.monthlyWithdrawalMax),
+      next.maxOpenWithdrawals, by],
   );
   return getSettings(tenant);
 }

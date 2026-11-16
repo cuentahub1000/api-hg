@@ -13,7 +13,7 @@ import { log } from '../lambdas/_common/logger';
 import { getConfig } from '../lambdas/_common/config';
 import { checkEnv } from '../lambdas/_common/db';
 import { compile, match, queryToRecord, toHttp, type Handler } from './router';
-import { handleSandbox } from '../lambdas/_domain/sandbox';
+import { handleSandbox } from '../lambdas/_domain/providers/sandbox';
 
 import { handler as depositsCreate } from '../lambdas/deposits-create';
 import { handler as withdrawalsCreate } from '../lambdas/withdrawals-create';
@@ -27,6 +27,11 @@ import { handler as adminPaymentsReject } from '../lambdas/admin-payments-reject
 import { handler as adminSettingsGet } from '../lambdas/admin-settings-get';
 import { handler as adminSettingsUpdate } from '../lambdas/admin-settings-update';
 import { handler as adminReconcile } from '../lambdas/admin-reconcile';
+import { handler as adminPaymentsCancel } from '../lambdas/admin-payments-cancel';
+import { handler as adminPlayerGet } from '../lambdas/admin-player-get';
+import { handler as adminPlayerLimitsUpdate } from '../lambdas/admin-player-limits-update';
+import { handler as adminPlayerBlock } from '../lambdas/admin-player-block';
+import { handler as adminPlayerUnblock } from '../lambdas/admin-player-unblock';
 import { handler as webhook } from '../lambdas/webhook';
 
 const HANDLERS: Record<string, Handler> = {
@@ -42,6 +47,11 @@ const HANDLERS: Record<string, Handler> = {
   'admin-settings-get': adminSettingsGet as Handler,
   'admin-settings-update': adminSettingsUpdate as Handler,
   'admin-reconcile': adminReconcile as Handler,
+  'admin-payments-cancel': adminPaymentsCancel as Handler,
+  'admin-player-get': adminPlayerGet as Handler,
+  'admin-player-limits-update': adminPlayerLimitsUpdate as Handler,
+  'admin-player-block': adminPlayerBlock as Handler,
+  'admin-player-unblock': adminPlayerUnblock as Handler,
   webhook: webhook as unknown as Handler,
 };
 

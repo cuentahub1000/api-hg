@@ -17,6 +17,13 @@ export function amount(bag: Bag, key = 'amount'): number {
   return Math.round(n * 100) / 100;
 }
 
+/** An optional national id (7–14 alphanumerics), hashed before storage. */
+export function document(bag: Bag): string | undefined {
+  const v = optionalString(bag, 'document', 20);
+  if (v && !/^[0-9A-Za-z.\-]{7,20}$/.test(v)) throw new ValidationError('Validation failed', "'document' is not a valid id");
+  return v;
+}
+
 export function payer(bag: Bag): Payer | undefined {
   const raw = bag?.payer;
   if (raw === undefined || raw === null) return undefined;

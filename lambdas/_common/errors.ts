@@ -17,6 +17,7 @@ export enum ErrorCodes {
   INSUFFICIENT_FUNDS = 'INSUFFICIENT_FUNDS',
   CONFLICT = 'CONFLICT',
   REQUEST_IN_PROGRESS = 'REQUEST_IN_PROGRESS',
+  BLOCKED = 'BLOCKED',
 }
 
 export class PaymentsError extends Error {
@@ -107,13 +108,24 @@ export class InvalidStateError extends PaymentsError {
   }
 }
 
-/** 422 — amount outside the configured limits, or too many open requests. */
+/** 422 — amount outside the player's limits. The message never names the limit; `detail.rule` is for operators' logs only. */
 export class LimitError extends PaymentsError {
-  constructor(message: string) {
+  constructor(message: string, detail?: unknown) {
     super(message);
     this.name = ErrorCodes.LIMIT_EXCEEDED;
     this.description = message;
+    this.detail = detail;
     this.httpErrorStatus = 422;
+  }
+}
+
+/** 403 — an operator blocked this kind of movement for the player; the player is told to contact support. */
+export class BlockedError extends PaymentsError {
+  constructor(kind: 'deposit' | 'withdrawal') {
+    super(`${kind}s are not available for this account`);
+    this.name = ErrorCodes.BLOCKED;
+    this.description = 'This option is not available for your account. Please contact support.';
+    this.httpErrorStatus = 403;
   }
 }
 

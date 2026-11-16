@@ -166,7 +166,7 @@ let sandboxMod: Promise<{ handleSandbox: (m: string, p: string) => Promise<{ sta
 function sandbox() {
   if (!sandboxMod) {
     const outfile = path.join(DIST, '_sandbox.js');
-    sandboxMod = esbuild.build({ entryPoints: [path.join(LAMBDAS, '_domain', 'sandbox.ts')], outfile, bundle: true, platform: 'node', target: 'node22', format: 'cjs', sourcemap: 'inline', external: ['@aws-sdk/*', 'pg-native'], logLevel: 'warning' })
+    sandboxMod = esbuild.build({ entryPoints: [path.join(LAMBDAS, '_domain', 'providers', 'sandbox.ts')], outfile, bundle: true, platform: 'node', target: 'node22', format: 'cjs', sourcemap: 'inline', external: ['@aws-sdk/*', 'pg-native'], logLevel: 'warning' })
       .then(() => { delete require.cache[require.resolve(outfile)]; return require(outfile); });
   }
   return sandboxMod;

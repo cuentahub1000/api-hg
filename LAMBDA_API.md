@@ -29,7 +29,10 @@ HMAC.
 
 `error.type` values: `VALIDATION_ERROR` (400), `AUTH_ERROR` (401), `FORBIDDEN`
 (403), `ENTITY_NOT_FOUND` (404), `CONFLICT` (409), `INVALID_STATE` (422),
-`LIMIT_EXCEEDED` (422), `INSUFFICIENT_FUNDS` (422), `UPSTREAM_ERROR` (502),
+`LIMIT_EXCEEDED` (422, generic: the player is never told which limit),
+`REQUEST_IN_PROGRESS` (422, `detail` names the blocking withdrawal), `BLOCKED`
+(403, an operator blocked this kind for the player; tell them to contact
+support), `INSUFFICIENT_FUNDS` (422), `UPSTREAM_ERROR` (502),
 `NOT_CONFIGURED` (503), `PAYMENTS_ERROR` (500). A 5xx message is always the
 generic "There was an error processing the request".
 
@@ -48,7 +51,12 @@ generic "There was an error processing the request".
 | `admin-payments-reject` | `/api/v1/payments/admin/payments/{id}/reject` | POST | operator |
 | `admin-settings-get` | `/api/v1/payments/admin/settings` | GET | operator |
 | `admin-settings-update` | `/api/v1/payments/admin/settings` | PUT | operator (root only) |
+| `admin-payments-cancel` | `/api/v1/payments/admin/payments/{id}/cancel` | POST | operator |
 | `admin-reconcile` | `/api/v1/payments/admin/reconcile` | POST | operator |
+| `admin-player-get` | `/api/v1/payments/admin/players/{partyId}` | GET | operator |
+| `admin-player-limits-update` | `/api/v1/payments/admin/players/{partyId}/limits` | PUT | operator |
+| `admin-player-block` | `/api/v1/payments/admin/players/{partyId}/blocks` | POST | operator |
+| `admin-player-unblock` | `/api/v1/payments/admin/players/{partyId}/blocks/{blockId}/lift` | POST | operator |
 | `webhook` | `/api/v1/payments/webhook` | POST | provider (HMAC) |
 
 Working payloads are in `tests/events/`.
@@ -79,10 +87,14 @@ Every endpoint returns or lists `Payment` objects. Amounts are **major units**
 
 To a **player** `destination.value` is masked (`•••• 8901`). To an **operator**
 the object also carries: `partyId`, `username`, `chain`, `accountId`,
-`walletOperationId`, `walletStatus`, `providerRef`, `providerStatus`,
-`payer` (deposits: `{ document, name, email }`), `client` (`{ ip, userAgent }`
-of the request, from the `x-player-ip` / `x-player-user-agent` headers the
-front-end forwards), `decidedBy`, `decidedAt`, `errorCode`.
+`provider` (which integration handled it, e.g. `hg`), `walletOperationId`,
+`walletStatus`, `providerRef`, `providerStatus`, `providerData` (the
+provider's raw response, verbatim), `payer` (deposits: `{ name, email }` — the
+national id is **not** stored), `documentHash` (keyed HMAC-SHA256 of the
+national id the player gave, for comparing later entries without holding the
+number), `client` (`{ ip, userAgent }` of the request, from the
+`x-player-ip` / `x-player-user-agent` headers the front-end forwards),
+`decidedBy`, `decidedAt`, `errorCode`.
 
 ### Deposit lifecycle
 
@@ -127,8 +139,11 @@ The amount is **blocked in the wallet the moment the request is accepted**
 
 Returns the `Payment` (`pending`) with `checkoutUrl`. Send the player there;
 after paying they come back to the configured return URL with
-`?payment=<id>`. 422 `LIMIT_EXCEEDED` outside `[minDeposit, maxDeposit]`,
-503 `NOT_CONFIGURED` when deposits are disabled.
+`?payment=<id>`. 422 `LIMIT_EXCEEDED` outside the player's effective limits
+(per request or rolling caps; generic message), 403 `BLOCKED` when an operator
+blocked deposits for the player, 503 `NOT_CONFIGURED` when deposits are
+disabled. `payer.document` is forwarded to the provider and kept only as
+`documentHash`.
 
 ### `withdrawals-create` — POST `/api/v1/payments/withdrawals`
 
@@ -137,11 +152,14 @@ after paying they come back to the configured return URL with
   "destination": { "type": "cbu", "value": "0170099220000067797370", "holderName": "Ana Perez" } }
 ```
 
-`type` is `cbu` or `cvu`; `value` is 22 digits. Returns the `Payment`
-(`awaiting_approval` or `processing`). 422 `INSUFFICIENT_FUNDS` when the
-wallet has not enough withdrawable (payout) balance, `LIMIT_EXCEEDED` outside
-`[minWithdrawal, maxWithdrawal]` or when the player already has
-`maxOpenWithdrawals` open requests.
+`type` is `cbu` or `cvu`; `value` is 22 digits; `document` (optional national
+id) is hashed, never stored. Returns the `Payment` (`awaiting_approval` or
+`processing`). 422 `INSUFFICIENT_FUNDS` when the wallet has not enough
+withdrawable (payout) balance; 422 `LIMIT_EXCEEDED` when the amount is outside
+the player's effective limits (per request or rolling day/week/month caps — the
+message never says which); 422 `REQUEST_IN_PROGRESS` when the player already
+has `maxOpenWithdrawals` open (`detail` = the blocking one); 403 `BLOCKED` when
+an operator blocked withdrawals for the player.
 
 ### `withdrawals-cancel` — POST `/api/v1/payments/withdrawals/{id}/cancel`
 
@@ -191,6 +209,12 @@ withdrawal's blocked amount or cancels the pending deposit operation (the
 money the payer sent stays with the operator to refund outside the platform;
 the event trail records it). Returns the `Payment`.
 
+### `admin-payments-cancel` — POST `.../{id}/cancel`
+
+Body `{ "note" }` (required). Only a deposit still `pending` (nobody paid):
+the provider's checkout is cancelled and the pending wallet deposit dropped.
+Returns the `Payment` (`cancelled`).
+
 ### `admin-settings-get` — GET · `admin-settings-update` — PUT `/api/v1/payments/admin/settings`
 
 Settings are per tenant (the root of the caller's chain). Any operator may
@@ -206,6 +230,8 @@ read; only a **root** operator (empty chain) may update, others get 403.
   "holdWithdrawalsAbove": null,
   "minDeposit": 1000, "maxDeposit": 2000000,
   "minWithdrawal": 1000, "maxWithdrawal": 1000000,
+  "dailyDepositMax": null, "weeklyDepositMax": null, "monthlyDepositMax": null,       // rolling 24 h / 7 d / 30 d caps; null = none
+  "dailyWithdrawalMax": null, "weeklyWithdrawalMax": null, "monthlyWithdrawalMax": null,
   "maxOpenWithdrawals": 1,
   "currency": "ARS",                // read-only, from the deployment
   "updatedAt": "...", "updatedBy": "<partyId>" | null
@@ -213,6 +239,41 @@ read; only a **root** operator (empty chain) may update, others get 403.
 ```
 
 PUT accepts any subset of the writable fields and returns the full object.
+
+### Per-player limits and blocks
+
+`GET /api/v1/payments/admin/players/{partyId}` (`admin-player-get`):
+
+```jsonc
+{
+  "partyId": "...",
+  "limits": { "minDeposit": null, "maxDeposit": null, "minWithdrawal": null, "maxWithdrawal": 50000,   // the player's overrides; null = tenant value
+              "dailyDepositMax": null, "weeklyDepositMax": null, "monthlyDepositMax": null,
+              "dailyWithdrawalMax": 100000, "weeklyWithdrawalMax": null, "monthlyWithdrawalMax": null,
+              "maxOpenWithdrawals": null, "note": "VIP review pending", "updatedAt": "...", "updatedBy": "<partyId>" },
+  "effective": { "deposit": { "min": 1000, "max": 2000000, "daily": null, "weekly": null, "monthly": null, "maxOpenWithdrawals": 1 },
+                 "withdrawal": { "min": 1000, "max": 50000, "daily": 100000, "weekly": null, "monthly": null, "maxOpenWithdrawals": 1 } },
+  "usage": { "deposit": { "day": 2000, "week": 2000, "month": 2000 }, "withdrawal": { "day": 0, "week": 0, "month": 0 } },
+  "blocks": [ { "id": 1, "kind": "withdrawal", "until": "2026-11-18T..." | null, "reason": "...", "createdBy": "...", "createdAt": "...", "liftedAt": null, "liftedBy": null, "active": true } ],
+  "blocked": { "deposit": false, "withdrawal": true }
+}
+```
+
+`PUT .../players/{partyId}/limits` (`admin-player-limits-update`): any subset
+of the `limits` fields; `null` removes an override. Returns the overview.
+
+`POST .../players/{partyId}/blocks` (`admin-player-block`): `{ "kind":
+"deposit" | "withdrawal" | "all", "reason", "days"?: 2 | "until"?: ISO }`;
+neither `days` nor `until` = permanent. Returns the overview.
+
+`POST .../players/{partyId}/blocks/{blockId}/lift` (`admin-player-unblock`):
+lifts one block early. Returns the overview.
+
+Usage windows are rolling (last 24 h / 7 d / 30 d) over every payment of the
+kind that is or may become money moved (`pending`, `under_review`,
+`awaiting_approval`, `processing`, `completed`). A player outside the
+operator's subtree is a 404; a player with no payment yet can only be managed
+by a root operator.
 
 ### `admin-reconcile` — POST `/api/v1/payments/admin/reconcile`
 

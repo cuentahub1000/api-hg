@@ -14,7 +14,7 @@ import { getConfig } from '../_common/config';
 import { AuthError, NotConfiguredError, ValidationError } from '../_common/errors';
 import { log } from '../_common/logger';
 import { applyCheckout, applyPayout } from './payments';
-import { verifySignature } from './provider';
+import { verifySignature } from './providers/hg';
 
 export interface WebhookResult { accepted: boolean; duplicate: boolean; handled: string }
 

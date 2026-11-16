@@ -6,7 +6,7 @@ const fs = require('fs');
 const env = fs.readFileSync(`${__dirname}/lambda.env`, 'utf8');
 const secret = (/^JWT_SECRET=(.*)$/m.exec(env) || [])[1]?.trim();
 if (!secret) { console.error('JWT_SECRET is empty in local/lambda.env'); process.exit(1); }
-const [, kind = 'player', name = 'ana'] = process.argv;
+const [kind = 'player', name = 'ana'] = process.argv.slice(2);
 const who = kind === 'operator'
   ? { id: 2, username: 'opadmin', identifier: 'opadmin', metadata: { partyId: 'mock', chain: '', partyType: 'organization' }, fullChain: 'mock' }
   : { id: 1, username: name, identifier: name, partyId: `mock-${name}`, metadata: { partyId: `mock-${name}`, chain: 'mock', partyType: 'person' }, fullChain: `mock-mock-${name}` };
