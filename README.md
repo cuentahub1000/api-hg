@@ -45,7 +45,7 @@ lambdas/
 server/             HTTP runtime (Kubernetes / local shim)
 sql/                migrations, applied in name order once
 cdk/                one stack per function + resource group (invoker policies) + database
-scripts/            bootstrap-ssm.sh, migrate.ts
+scripts/            bootstrap-ssm.sh, ssm-status.sh, migrate.ts
 infra/              docker-compose for a local Postgres; README = inventory
 tests/unit, tests/events
 ```
@@ -82,6 +82,7 @@ token deposits and withdrawals answer 503 `NOT_CONFIGURED`; the front-ends'
 
 ```sh
 scripts/bootstrap-ssm.sh <env>        # app-owned SSM parameters + <env>/HgSecrets
+scripts/ssm-status.sh <env>           # what is set, what is PENDING
 cd cdk && npm install
 envName=<env> npm run synth
 envName=<env> npm run deploy:all       # resource group -> database -> webhook -> functions, then migrate

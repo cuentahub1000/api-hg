@@ -42,7 +42,7 @@ handler explicitly. Contract: `LAMBDA_API.md`.
 * **Errors say nothing about the inside.** Throw `PaymentsError` subclasses;
   the envelope redacts. Player-facing text never names the provider.
 * **Infrastructure is inventoried.** New component, URL, secret or parameter
-  → `infra/README.md`, `cdk/lib/config.ts`, `scripts/bootstrap-ssm.sh`.
+  → `infra/README.md`, `cdk/lib/config.ts`, `scripts/bootstrap-ssm.sh`, `scripts/ssm-status.sh`.
 
 ## Repo boundaries
 

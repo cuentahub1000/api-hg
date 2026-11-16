@@ -109,3 +109,7 @@ Running log of what was built and why. Dates are 2026-11-16 unless noted.
   wired (operators have the button).
 * Deposit `rejected` after payment: money stays with the operator's provider
   account; refund is manual and recorded in the event trail.
+
+## 2026-11-16 — scripts/ssm-status.sh
+
+Added `scripts/ssm-status.sh <env>` (same shape as auth-lambda/wallet-lambda): platform rows, the wallet invoker policy, app-owned rows from bootstrap-ssm.sh, rows written by the deploy (invoker policies, db-*, webhook-function-url) and the three secrets. PENDING vs ERROR kept distinct; fails once on unusable credentials.
