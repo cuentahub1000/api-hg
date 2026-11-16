@@ -6,3 +6,6 @@ cdk/cdk.out/
 cdk/cdk.context.json
 .env
 *.tsbuildinfo
+local/lambda.env
+local/secrets.json
+local/dist/
