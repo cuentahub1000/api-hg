@@ -9,3 +9,4 @@ cdk/cdk.context.json
 local/lambda.env
 local/secrets.json
 local/dist/
+local/shim.log

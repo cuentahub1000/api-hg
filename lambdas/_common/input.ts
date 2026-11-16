@@ -51,7 +51,8 @@ export function destination(bag: Bag): { type: DestinationType; value: string; h
 export function listFilter(query: Bag, defaults: { limit: number; max: number }): ListFilter {
   const kind = optionalString(query, 'kind', 20) as PaymentKind | undefined;
   if (kind && kind !== 'deposit' && kind !== 'withdrawal') throw new ValidationError('Validation failed', "'kind' must be deposit or withdrawal");
-  const statuses = stringList(query, 'status', 20).flatMap((s) => (s === 'open' ? [...OPEN_STATUSES] : [s])) as PaymentStatus[];
+  // `open` = every non-final status; `all` (or nothing) = no status filter.
+  const statuses = stringList(query, 'status', 20).filter((s) => s !== 'all').flatMap((s) => (s === 'open' ? [...OPEN_STATUSES] : [s])) as PaymentStatus[];
   for (const s of statuses) if (!ALL_STATUSES.includes(s)) throw new ValidationError('Validation failed', `unknown status '${s}'`);
   const from = optionalString(query, 'from', 40);
   const to = optionalString(query, 'to', 40);
@@ -62,6 +63,7 @@ export function listFilter(query: Bag, defaults: { limit: number; max: number })
     kind,
     statuses: statuses.length ? [...new Set(statuses)] : undefined,
     partyId: optionalString(query, 'partyId', 64),
+    accountId: optionalString(query, 'accountId', 64),
     from: from ? new Date(from).toISOString() : undefined,
     to: to ? new Date(to).toISOString() : undefined,
     limit: optionalInt(query, 'limit', defaults.limit, 1, defaults.max),

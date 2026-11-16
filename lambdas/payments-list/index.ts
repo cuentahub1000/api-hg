@@ -5,6 +5,7 @@ import { listForPlayer } from '../_domain/payments';
 
 export const handler = paymentsHandler('player', async (ctx, event) => {
   const f = listFilter(event.query, { limit: 20, max: 100 });
-  f.partyId = undefined; // a player never filters by party: the scope is the token
+  f.partyId = undefined; // a player never filters by party or account: the scope is the token
+  f.accountId = undefined;
   return listForPlayer(ctx, f);
 });

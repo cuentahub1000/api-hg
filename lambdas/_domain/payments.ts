@@ -40,6 +40,7 @@ export interface ListFilter {
   kind?: PaymentKind;
   statuses?: PaymentStatus[];
   partyId?: string;
+  accountId?: string;
   from?: string;
   to?: string;
   limit: number;
@@ -120,10 +121,10 @@ export async function getForPlayer(ctx: SecurityContext, id: string): Promise<Pa
   return playerView(row);
 }
 
-export async function getForOperator(ctx: SecurityContext, id: string): Promise<{ payment: PaymentAdminView; events: Array<{ at: string; actor: string; type: string; data: unknown }> }> {
+export async function getForOperator(ctx: SecurityContext, id: string): Promise<{ payment: PaymentAdminView; events: Array<{ at: string; actor: string; actorName: string | null; type: string; data: unknown }> }> {
   const row = await rowFor(id, { fullChain: ctx.fullChain });
   const events = await db.query<PaymentEventRow>('SELECT * FROM payment_event WHERE payment_id = $1 ORDER BY id', [row.id]);
-  return { payment: adminView(row), events: events.map((e) => ({ at: e.at, actor: e.actor, type: e.type, data: e.data })) };
+  return { payment: adminView(row), events: events.map((e) => ({ at: e.at, actor: e.actor, actorName: e.actor_name, type: e.type, data: e.data })) };
 }
 
 /**
@@ -147,12 +148,18 @@ export async function assertPartyInScope(ctx: SecurityContext, partyId: string):
 
 // ---- writes ------------------------------------------------------------------
 
-async function addEvent(q: Queryable, paymentId: string, actor: string, type: string, data?: unknown): Promise<void> {
-  await q.execute('INSERT INTO payment_event (payment_id, actor, type, data) VALUES ($1, $2, $3, $4)', [paymentId, actor, type, data === undefined ? null : JSON.stringify(data)]);
+async function addEvent(q: Queryable, paymentId: string, actor: string, type: string, data?: unknown, actorName?: string | null): Promise<void> {
+  await q.execute('INSERT INTO payment_event (payment_id, actor, actor_name, type, data) VALUES ($1, $2, $3, $4, $5)', [paymentId, actor, actorName ?? null, type, data === undefined ? null : JSON.stringify(data)]);
+}
+
+/** `operator:<partyId>` plus the name the back-office shows. */
+function operatorActor(ctx: SecurityContext): { actor: string; name: string } {
+  return { actor: `operator:${ctx.partyId}`, name: ctx.displayName || ctx.username || ctx.partyId };
 }
 
 interface Patch {
   status?: PaymentStatus;
+  decided_by_name?: string | null;
   hold?: boolean;
   wallet_operation_id?: string | null;
   wallet_status?: string | null;
@@ -335,7 +342,8 @@ export async function approve(ctx: SecurityContext, id: string, note: string | u
 export async function reject(ctx: SecurityContext, id: string, note: string): Promise<PaymentAdminView> {
   const row = await rowFor(id, { fullChain: ctx.fullChain });
   assertStatus(row, ['awaiting_approval']);
-  return adminView(await release(row, 'rejected', `operator:${ctx.partyId}`, note, ctx.partyId));
+  const { actor, name } = operatorActor(ctx);
+  return adminView(await release(row, 'rejected', actor, note, ctx.partyId, undefined, name));
 }
 
 /** Operator cancels a deposit nobody has paid yet: the checkout is cancelled and the pending wallet deposit dropped. */
@@ -364,7 +372,7 @@ async function completeDeposit(row: PaymentRow, actor: string, note: string | nu
  * Withdrawal or deposit leaves the pipeline without money moving: cancel the
  * wallet operation (releases a blocked withdrawal / drops a pending deposit).
  */
-async function release(row: PaymentRow, status: 'rejected' | 'cancelled' | 'failed' | 'expired', actor: string, note: string | null, decidedBy?: string, errorCode?: string): Promise<PaymentRow> {
+async function release(row: PaymentRow, status: 'rejected' | 'cancelled' | 'failed' | 'expired', actor: string, note: string | null, decidedBy?: string, errorCode?: string, actorName?: string): Promise<PaymentRow> {
   let walletStatus = row.wallet_status;
   if (row.wallet_operation_id) {
     const op = await wallet.transition(row.wallet_operation_id, 'CANCEL');
@@ -375,21 +383,21 @@ async function release(row: PaymentRow, status: 'rejected' | 'cancelled' | 'fail
   }
   const updated = await patch(row.id, {
     status, wallet_status: walletStatus, note: note ?? row.note, error_code: errorCode ?? null,
-    ...(decidedBy ? { decided_by: decidedBy } : {}),
+    ...(decidedBy ? { decided_by: decidedBy, decided_by_name: actorName ?? null } : {}),
   }, row.version);
-  await addEvent(db, row.id, actor, status, note ? { note } : undefined);
+  await addEvent(db, row.id, actor, status, note ? { note } : undefined, actorName);
   return updated;
 }
 
 /** Approved (or never held) withdrawal: ask the provider for the bank transfer. */
-async function submitPayout(row: PaymentRow, actor: string): Promise<PaymentRow> {
+async function submitPayout(row: PaymentRow, actor: string, actorName?: string): Promise<PaymentRow> {
   if (!row.destination) throw new InvalidStateError('withdrawal has no destination');
   const prov = await provider();
   try {
     const po = await prov.createPayout({ paymentId: row.id, amount: Number(row.amount), destination: row.destination });
     await setProvider(row.id, prov.name, { ref: po.id, status: po.status, data: po.raw });
     const updated = await patch(row.id, { status: 'processing' });
-    await addEvent(db, row.id, actor, 'submitted', { ref: po.id });
+    await addEvent(db, row.id, actor, 'submitted', { ref: po.id }, actorName);
     return updated;
   } catch (err) {
     // The transfer never left: give the money back and surface the failure.

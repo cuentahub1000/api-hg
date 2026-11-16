@@ -189,14 +189,20 @@ outside it is a 404.
 ### `admin-payments-list` — GET `/api/v1/payments/admin/payments`
 
 Query: `kind`, `status` (comma list; `open` expands to every non-final
-status), `partyId`, `from`, `to` (ISO dates, on `createdAt`), `limit`
+status, `all` means no filter), `accountId` (the wallet account, the id to track payments by), `partyId`, `from`, `to` (ISO dates, on `createdAt`), `limit`
 (default 50, max 200), `cursor`. Response as `payments-list`, with the
 operator fields.
 
 ### `admin-payments-get` — GET `/api/v1/payments/admin/payments/{id}`
 
 ```jsonc
-{ "payment": Payment, "events": [ { "at": "...", "actor": "player" | "operator:<partyId>" | "provider" | "system", "type": "created", "data": {} } ] }
+{ "payment": Payment, "events": [ { "at": "...", "actor": "player" | "operator:<partyId>" | "provider" | "system", "actorName": "Ana Perez" | null, "type": "created", "data": {} } ] }
+```
+
+`actorName` is the display name of the player or operator behind the event;
+show it, not the id.
+
+```jsonc
 ```
 
 ### `admin-payments-approve` — POST `.../{id}/approve` · `admin-payments-reject` — POST `.../{id}/reject`

@@ -65,6 +65,7 @@ export interface PaymentRow {
   client: ClientInfo | null;
   note: string | null;
   decided_by: string | null;
+  decided_by_name: string | null;
   decided_at: string | null;
   error_code: string | null;
   created_at: string;
@@ -89,6 +90,7 @@ export interface PaymentEventRow {
   payment_id: string;
   at: string;
   actor: string;
+  actor_name: string | null;
   type: string;
   data: unknown;
 }
@@ -128,6 +130,8 @@ export interface PaymentAdminView extends PaymentView {
   documentHash: string | null;
   client: ClientInfo | null;
   decidedBy: string | null;
+  /** The operator's display name / username at decision time. */
+  decidedByName: string | null;
   decidedAt: string | null;
   errorCode: string | null;
 }
@@ -189,6 +193,7 @@ export function adminView(r: PaymentRow): PaymentAdminView {
     documentHash: r.document_hash,
     client: r.client,
     decidedBy: r.decided_by,
+    decidedByName: r.decided_by_name,
     decidedAt: r.decided_at,
     errorCode: r.error_code,
   };
