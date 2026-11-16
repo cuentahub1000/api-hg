@@ -172,11 +172,11 @@ export async function createDeposit(ctx: SecurityContext, input: CreateDepositIn
   const id = randomUUID();
   // 1. our row, so the provider and wallet references always have a home
   await db.execute(
-    `INSERT INTO payment (id, kind, status, tenant, party_id, username, chain, account_id, currency, amount, payer)
-     VALUES ($1, 'deposit', 'pending', $2, $3, $4, $5, $6, $7, $8, $9)`,
-    [id, tenant, ctx.partyId, ctx.username || null, ctx.chain, account.id, account.currencyId ?? cfg.currency, moneyParam(input.amount), input.payer ? JSON.stringify(input.payer) : null],
+    `INSERT INTO payment (id, kind, status, tenant, party_id, username, chain, account_id, currency, amount, payer, client)
+     VALUES ($1, 'deposit', 'pending', $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+    [id, tenant, ctx.partyId, ctx.username || null, ctx.chain, account.id, account.currencyId ?? cfg.currency, moneyParam(input.amount), input.payer ? JSON.stringify(input.payer) : null, clientOf(ctx)],
   );
-  await addEvent(db, id, 'player', 'created', { amount: input.amount });
+  await addEvent(db, id, 'player', 'created', { amount: input.amount, ip: ctx.ip, userAgent: ctx.userAgent });
 
   // 2. the wallet's pending deposit (visible, not spendable)
   let row: PaymentRow;
@@ -229,11 +229,11 @@ export async function createWithdrawal(ctx: SecurityContext, input: CreateWithdr
   const hold = needsHold('withdrawal', input.amount, s);
   const id = randomUUID();
   await db.execute(
-    `INSERT INTO payment (id, kind, status, tenant, party_id, username, chain, account_id, currency, amount, hold, destination)
-     VALUES ($1, 'withdrawal', 'awaiting_approval', $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-    [id, tenant, ctx.partyId, ctx.username || null, ctx.chain, account.id, account.currencyId ?? cfg.currency, moneyParam(input.amount), hold, JSON.stringify(input.destination)],
+    `INSERT INTO payment (id, kind, status, tenant, party_id, username, chain, account_id, currency, amount, hold, destination, client)
+     VALUES ($1, 'withdrawal', 'awaiting_approval', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+    [id, tenant, ctx.partyId, ctx.username || null, ctx.chain, account.id, account.currencyId ?? cfg.currency, moneyParam(input.amount), hold, JSON.stringify(input.destination), clientOf(ctx)],
   );
-  await addEvent(db, id, 'player', 'created', { amount: input.amount, destination: { type: input.destination.type, last4: input.destination.value.slice(-4) } });
+  await addEvent(db, id, 'player', 'created', { amount: input.amount, destination: { type: input.destination.type, last4: input.destination.value.slice(-4) }, ip: ctx.ip, userAgent: ctx.userAgent });
 
   // Block the money now. The wallet refuses when the payout bucket is short.
   let row: PaymentRow;
@@ -440,6 +440,10 @@ export async function reconcile(ctx: SecurityContext, staleMs = 10 * 60_000): Pr
     }
   }
   return { checked: rows.length, updated };
+}
+
+function clientOf(ctx: SecurityContext): string | null {
+  return ctx.ip || ctx.userAgent ? JSON.stringify({ ip: ctx.ip, userAgent: ctx.userAgent }) : null;
 }
 
 async function cancelWalletQuietly(row: PaymentRow, reason: string): Promise<void> {

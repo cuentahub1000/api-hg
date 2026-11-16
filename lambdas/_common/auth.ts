@@ -37,6 +37,9 @@ export interface SecurityContext {
   displayName: string;
   locale?: string;
   brand?: string;
+  /** The player's address and browser as the front-end saw them (`x-player-ip`, `x-player-user-agent`); hints for the record, never identity. */
+  ip?: string;
+  userAgent?: string;
 }
 
 export interface PaymentsEvent {
@@ -84,6 +87,8 @@ export function fromDecodedToken(payload: Record<string, unknown>, headers: Reco
     // knows (cookie-derived) as plain headers. Both are hints, never identity.
     locale: headers['x-player-locale'] || undefined,
     brand: headers['x-player-brand'] || undefined,
+    ip: (headers['x-player-ip'] || headers['x-forwarded-for'] || '').split(',')[0].trim().slice(0, 64) || undefined,
+    userAgent: (headers['x-player-user-agent'] || headers['user-agent'] || '').slice(0, 300) || undefined,
   };
 }
 

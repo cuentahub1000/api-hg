@@ -56,6 +56,7 @@ export interface PaymentRow {
   expires_at: string | null;
   destination: Destination | null;
   payer: Payer | null;
+  client: { ip?: string; userAgent?: string } | null;
   note: string | null;
   decided_by: string | null;
   decided_at: string | null;
@@ -104,6 +105,8 @@ export interface PaymentAdminView extends PaymentView {
   providerRef: string | null;
   providerStatus: string | null;
   payer: Payer | null;
+  /** Address and browser of the request, as the front-end saw the player. */
+  client: { ip?: string; userAgent?: string } | null;
   decidedBy: string | null;
   decidedAt: string | null;
   errorCode: string | null;
@@ -161,6 +164,7 @@ export function adminView(r: PaymentRow): PaymentAdminView {
     providerRef: r.provider_ref,
     providerStatus: r.provider_status,
     payer: r.payer,
+    client: r.client,
     decidedBy: r.decided_by,
     decidedAt: r.decided_at,
     errorCode: r.error_code,

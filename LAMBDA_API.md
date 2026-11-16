@@ -80,8 +80,9 @@ Every endpoint returns or lists `Payment` objects. Amounts are **major units**
 To a **player** `destination.value` is masked (`•••• 8901`). To an **operator**
 the object also carries: `partyId`, `username`, `chain`, `accountId`,
 `walletOperationId`, `walletStatus`, `providerRef`, `providerStatus`,
-`payer` (deposits: `{ document, name, email }`), `decidedBy`, `decidedAt`,
-`errorCode`.
+`payer` (deposits: `{ document, name, email }`), `client` (`{ ip, userAgent }`
+of the request, from the `x-player-ip` / `x-player-user-agent` headers the
+front-end forwards), `decidedBy`, `decidedAt`, `errorCode`.
 
 ### Deposit lifecycle
 
