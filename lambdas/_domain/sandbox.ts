@@ -86,6 +86,8 @@ const PAYOUT_ACTION = /^\/sandbox\/payout\/([0-9a-f-]{36})\/(done|error)$/;
 
 /** Routes `/sandbox/...`; returns null when the path is not a sandbox path. */
 export async function handleSandbox(method: string, pathname: string): Promise<SandboxResponse | null> {
+  // Explicit opt-in on top of PROVIDER_MODE=mock: the deployment never sets it.
+  if (process.env.SANDBOX_ENABLED !== '1') return null;
   const page = pathname.match(PAGE);
   if (page && method === 'GET') return await renderPage(page[1]);
 

@@ -103,7 +103,7 @@ async function build(): Promise<PaymentsConfig> {
       mode: 'mock',
       apiUrl: stripSlash(env.PROVIDER_SANDBOX_URL ?? 'http://127.0.0.1:9500'),
       apiToken: '',
-      webhookSecret: env.PROVIDER_WEBHOOK_SECRET ?? 'sandbox',
+      webhookSecret: env.PROVIDER_WEBHOOK_SECRET ?? '',
       accountId: 'sandbox',
       webhookUrl: '',
       country: (env.PAYMENTS_COUNTRY ?? 'AR').toUpperCase(),
@@ -121,6 +121,11 @@ async function build(): Promise<PaymentsConfig> {
   }
 
   const walletMode = (env.WALLET_MODE ?? 'lambda').toLowerCase();
+  // The sandbox page completes payments without any check. Never with a real
+  // wallet unless someone explicitly says so for a development wallet.
+  if (providerMode === 'mock' && walletMode !== 'mock' && env.SANDBOX_ALLOW_REAL_WALLET !== '1') {
+    throw new Error('PROVIDER_MODE=mock with a real wallet needs SANDBOX_ALLOW_REAL_WALLET=1 (development wallets only)');
+  }
   if (walletMode === 'mock') {
     cfg.wallet = { mode: 'mock', functionPrefix: '', apiUrl: '', apiKey: '', apiToken: '' };
   } else if ((env.WALLET_API_KEY || env.WALLET_API_TOKEN) && (walletMode === 'http' ? env.WALLET_API_URL : env.WALLET_FUNCTION_PREFIX)) {
