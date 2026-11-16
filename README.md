@@ -1,0 +1,110 @@
+# api-hg
+
+Deposits and withdrawals for the player platform through hg.cash: hosted
+checkouts for deposits, bank transfers (CBU/CVU) for withdrawals. One AWS
+Lambda per endpoint (`<env>-hg-<slug>`), or the same handlers as one HTTP
+service. Same event/envelope contract as `wallet-lambda` and `api-engagement`.
+
+For **calling** it, see [`LAMBDA_API.md`](LAMBDA_API.md). This file is about
+working on it. Infrastructure is inventoried in [`infra/README.md`](infra/README.md);
+decisions and progress in [`docs/WORKLOG.md`](docs/WORKLOG.md).
+
+## What it does
+
+* A **deposit** opens a pending wallet deposit and a hosted checkout. The
+  player pays on the provider's page; the provider's webhook (or a re-check)
+  marks it paid. Money reaches the balance only when the deposit is
+  `completed` — immediately, or after an operator approves it when holds are
+  on.
+* A **withdrawal** blocks the amount in the wallet the moment the request is
+  accepted, then waits for an operator (default) or goes straight to the bank
+  transfer. `completed` finalises the wallet operation; `rejected`, `failed`
+  and `cancelled` release the blocked amount.
+* **Holds and limits** are per tenant (root of the chain) and editable from
+  the back-office (`admin-settings-*`).
+
+The wallet is reached **only through its API** (`parties-get`,
+`operations-create`, `operations-transition`) with this service's own wallet
+credential. This service owns its own Postgres (`payment`, `payment_event`,
+`webhook_inbox`, `payment_settings`) and nothing else's.
+
+## Layout
+
+```
+lambdas/
+  _routes.ts        the endpoints (slug, method, resource, audience) — source of truth
+  _common/          auth (JWT), handler wrapper, envelope, redaction, http, db, config, input readers
+  _domain/
+    types.ts        statuses, row shape, player/operator views
+    payments.ts     the lifecycle: create, approve, reject, cancel, webhook/re-check transitions
+    settings.ts     per-tenant holds and limits
+    wallet.ts       the wallet client (lambda invoke or http, x-api-key)
+    provider.ts     the hg.cash client (checkouts, payouts, webhook signature)
+    webhook.ts      webhook intake: HMAC, inbox, dispatch
+  <slug>/index.ts   one file per function; migrate/ applies sql/
+server/             HTTP runtime (Kubernetes / local shim)
+sql/                migrations, applied in name order once
+cdk/                one stack per function + resource group (invoker policies) + database
+scripts/            bootstrap-ssm.sh, migrate.ts
+infra/              docker-compose for a local Postgres; README = inventory
+tests/unit, tests/events
+```
+
+## Working on it
+
+```sh
+npm install
+npm run build          # tsc --noEmit
+npm test               # compiles to dist-test/, node --test (20 unit tests, no database)
+```
+
+### Local shim
+
+Run the HTTP runtime locally and point a front-end at it with
+`API_HG_MODE=http` + `API_HG_URL=http://localhost:8080` (the other services
+stay on whatever mode they have):
+
+```sh
+cp .env.example .env                                # fill JWT_SECRET, PROVIDER_*, WALLET_API_KEY
+docker compose -f infra/docker-compose.yml up -d    # Postgres on 5433
+npm run migrate
+npm run server
+```
+
+`JWT_SECRET` must be the secret the front-end's tokens are signed with
+(front-self in `AUTH_MOCK` signs with `AUTH_MOCK_JWT_SECRET` /
+`NEXTAUTH_SECRET`). The wallet is reached in `WALLET_MODE=lambda` with the
+shell's AWS credentials, or `http` against a wallet URL. Without a provider
+token deposits and withdrawals answer 503 `NOT_CONFIGURED`; the front-ends'
+`API_HG_MODE=mock` previews the screens without this service at all.
+
+### Deploying (AWS)
+
+```sh
+scripts/bootstrap-ssm.sh <env>        # app-owned SSM parameters + <env>/HgSecrets
+cd cdk && npm install
+envName=<env> npm run synth
+envName=<env> npm run deploy:all       # resource group -> database -> webhook -> functions, then migrate
+```
+
+`deploy:all` ends by invoking `<env>-hg-migrate`. The webhook stack prints
+the public Function URL to register in the provider dashboard together with
+the signing secret. Attach `/<env>/api-hg-lambda/player-invoker-policy-arn`
+to front-self's task role and `operator-invoker-policy-arn` to the
+back-office's.
+
+## Rules that must hold
+
+* Identity only from the JWT; operators are scoped to their chain subtree in
+  SQL (`chain = fullChain OR chain LIKE fullChain-%`).
+* The wallet database is never opened. Any money movement is a wallet
+  operation created or transitioned through the wallet API.
+* Credentials (provider token, webhook secret, wallet key, DB password) are
+  read by `_common/config.ts` / `_common/db.ts` from env or Secrets Manager,
+  never returned, never logged.
+* Errors say nothing about the inside: `PaymentsError` subclasses, redaction
+  at the envelope, upstream bodies to the log only. Players never see the
+  provider's name; `UpstreamError` products are "payment provider" and
+  "wallet".
+* Every state change writes a `payment_event`; the webhook inbox keeps every
+  delivery (deduplicated by body hash).
