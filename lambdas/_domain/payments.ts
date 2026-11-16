@@ -126,15 +126,23 @@ export async function getForOperator(ctx: SecurityContext, id: string): Promise<
   return { payment: adminView(row), events: events.map((e) => ({ at: e.at, actor: e.actor, type: e.type, data: e.data })) };
 }
 
-/** Operator scope check without the row (for the player endpoints): the party must be in the subtree. */
+/**
+ * Operator scope for the per-player endpoints. Rules are per tenant, so the
+ * answer is always the operator's own tenant; the party must sit inside the
+ * operator's subtree (known from its payments) and must not belong to another
+ * tenant. A party with no payment yet can only be managed by a root operator,
+ * and the rules then wait under this tenant until the player's first payment.
+ */
 export async function assertPartyInScope(ctx: SecurityContext, partyId: string): Promise<string> {
-  const row = await db.one<{ tenant: string; chain: string }>(
-    `SELECT tenant, chain FROM payment WHERE party_id = $1 AND (chain = $2 OR chain LIKE $3) ORDER BY created_at DESC LIMIT 1`,
-    [partyId, ctx.fullChain, `${ctx.fullChain}-%`],
+  const tenant = rootOf(ctx.fullChain);
+  const elsewhere = await db.one<{ n: string }>('SELECT count(*)::text AS n FROM payment WHERE party_id = $1 AND tenant <> $2', [partyId, tenant]);
+  if (Number(elsewhere?.n ?? 0) > 0) throw new NotFoundError('Player not found');
+  const inScope = await db.one<{ n: string }>(
+    'SELECT count(*)::text AS n FROM payment WHERE party_id = $1 AND tenant = $2 AND (chain = $3 OR chain LIKE $4)',
+    [partyId, tenant, ctx.fullChain, `${ctx.fullChain}-%`],
   );
-  // A player with no payment yet is still manageable by a root operator of the tenant.
-  if (!row && ctx.chain !== '') throw new NotFoundError('Player not found');
-  return row?.tenant ?? rootOf(ctx.fullChain);
+  if (Number(inScope?.n ?? 0) === 0 && ctx.chain !== '') throw new NotFoundError('Player not found');
+  return tenant;
 }
 
 // ---- writes ------------------------------------------------------------------

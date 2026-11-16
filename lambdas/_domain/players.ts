@@ -11,6 +11,7 @@
 import { db } from '../_common/db';
 import { BlockedError, LimitError } from '../_common/errors';
 import { log } from '../_common/logger';
+import { rootOf } from '../_common/chain';
 import type { SecurityContext } from '../_common/auth';
 import { getSettings, mergeFields } from './settings';
 import { COUNTED_STATUSES, money, moneyParam, type KindLimits, type PaymentKind, type Settings } from './types';
@@ -57,8 +58,8 @@ interface LimitsRow {
 
 export interface PlayerLimitsView extends PlayerLimits { partyId: string; updatedAt: string | null; updatedBy: string | null }
 
-export async function getPlayerLimits(partyId: string): Promise<PlayerLimitsView> {
-  const r = await db.one<LimitsRow>('SELECT * FROM player_limits WHERE party_id = $1', [partyId]);
+export async function getPlayerLimits(tenant: string, partyId: string): Promise<PlayerLimitsView> {
+  const r = await db.one<LimitsRow>('SELECT * FROM player_limits WHERE tenant = $1 AND party_id = $2', [tenant, partyId]);
   if (!r) return { ...EMPTY, partyId, updatedAt: null, updatedBy: null };
   return {
     partyId,
@@ -71,7 +72,7 @@ export async function getPlayerLimits(partyId: string): Promise<PlayerLimitsView
 
 /** Any subset of the fields; `null` clears an override back to the tenant value. */
 export async function updatePlayerLimits(partyId: string, tenant: string, body: Record<string, unknown>, by: string): Promise<PlayerLimitsView> {
-  const current = await getPlayerLimits(partyId);
+  const current = await getPlayerLimits(tenant, partyId);
   const next = mergeFields(current as unknown as Record<string, unknown>, body, TEMPLATE, [], true) as unknown as PlayerLimits;
   const opt = (v: number | null) => (v === null ? null : moneyParam(v));
   await db.execute(
@@ -79,7 +80,7 @@ export async function updatePlayerLimits(partyId: string, tenant: string, body: 
        daily_deposit_max, weekly_deposit_max, monthly_deposit_max, daily_withdrawal_max, weekly_withdrawal_max, monthly_withdrawal_max,
        max_open_withdrawals, note, updated_at, updated_by)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14, now(), $15)
-     ON CONFLICT (party_id) DO UPDATE SET tenant = EXCLUDED.tenant,
+     ON CONFLICT (tenant, party_id) DO UPDATE SET
        min_deposit = EXCLUDED.min_deposit, max_deposit = EXCLUDED.max_deposit, min_withdrawal = EXCLUDED.min_withdrawal, max_withdrawal = EXCLUDED.max_withdrawal,
        daily_deposit_max = EXCLUDED.daily_deposit_max, weekly_deposit_max = EXCLUDED.weekly_deposit_max, monthly_deposit_max = EXCLUDED.monthly_deposit_max,
        daily_withdrawal_max = EXCLUDED.daily_withdrawal_max, weekly_withdrawal_max = EXCLUDED.weekly_withdrawal_max, monthly_withdrawal_max = EXCLUDED.monthly_withdrawal_max,
@@ -89,7 +90,7 @@ export async function updatePlayerLimits(partyId: string, tenant: string, body: 
       opt(next.dailyWithdrawalMax), opt(next.weeklyWithdrawalMax), opt(next.monthlyWithdrawalMax),
       next.maxOpenWithdrawals, next.note, by],
   );
-  return getPlayerLimits(partyId);
+  return getPlayerLimits(tenant, partyId);
 }
 
 /** The limits that apply to this player for this kind: override, else tenant. */
@@ -108,13 +109,13 @@ export function effectiveLimits(kind: PaymentKind, s: Settings, p: PlayerLimits)
 export interface Usage { day: number; week: number; month: number }
 
 /** Amount of this kind the player moved (or is moving) in the last 24 h / 7 d / 30 d. */
-export async function usage(partyId: string, kind: PaymentKind): Promise<Usage> {
+export async function usage(tenant: string, partyId: string, kind: PaymentKind): Promise<Usage> {
   const r = await db.one<{ day: string; week: string; month: string }>(
     `SELECT coalesce(sum(amount) FILTER (WHERE created_at >= now() - interval '1 day'), 0)::text AS day,
             coalesce(sum(amount) FILTER (WHERE created_at >= now() - interval '7 days'), 0)::text AS week,
             coalesce(sum(amount) FILTER (WHERE created_at >= now() - interval '30 days'), 0)::text AS month
-       FROM payment WHERE party_id = $1 AND kind = $2 AND status = ANY($3) AND created_at >= now() - interval '30 days'`,
-    [partyId, kind, COUNTED_STATUSES],
+       FROM payment WHERE tenant = $1 AND party_id = $2 AND kind = $3 AND status = ANY($4) AND created_at >= now() - interval '30 days'`,
+    [tenant, partyId, kind, COUNTED_STATUSES],
   );
   return { day: Number(r?.day ?? 0), week: Number(r?.week ?? 0), month: Number(r?.month ?? 0) };
 }
@@ -124,7 +125,8 @@ export async function usage(partyId: string, kind: PaymentKind): Promise<Usage> 
  * same whichever rule fired: the player is not told which cap exists.
  */
 export async function checkLimits(ctx: SecurityContext, kind: PaymentKind, amount: number, s: Settings): Promise<ReturnType<typeof effectiveLimits>> {
-  const lim = effectiveLimits(kind, s, await getPlayerLimits(ctx.partyId));
+  const tenant = rootOf(ctx.fullChain);
+  const lim = effectiveLimits(kind, s, await getPlayerLimits(tenant, ctx.partyId));
   const refuse = (rule: string) => {
     log.info('limit refused', { party: ctx.partyId, kind, amount, rule });
     return new LimitError('This amount is not available right now');
@@ -132,7 +134,7 @@ export async function checkLimits(ctx: SecurityContext, kind: PaymentKind, amoun
   if (amount < lim.min) throw refuse('min');
   if (amount > lim.max) throw refuse('max');
   if (lim.daily !== null || lim.weekly !== null || lim.monthly !== null) {
-    const u = await usage(ctx.partyId, kind);
+    const u = await usage(tenant, ctx.partyId, kind);
     if (lim.daily !== null && u.day + amount > lim.daily) throw refuse('daily');
     if (lim.weekly !== null && u.week + amount > lim.weekly) throw refuse('weekly');
     if (lim.monthly !== null && u.month + amount > lim.monthly) throw refuse('monthly');
@@ -165,23 +167,23 @@ function toBlock(r: BlockRow): PlayerBlock {
   return { id: Number(r.id), partyId: r.party_id, kind: r.kind, until: r.until, reason: r.reason, createdBy: r.created_by, createdAt: r.created_at, liftedAt: r.lifted_at, liftedBy: r.lifted_by, active };
 }
 
-export async function listBlocks(partyId: string): Promise<PlayerBlock[]> {
-  const rows = await db.query<BlockRow>('SELECT * FROM player_block WHERE party_id = $1 ORDER BY created_at DESC LIMIT 100', [partyId]);
+export async function listBlocks(tenant: string, partyId: string): Promise<PlayerBlock[]> {
+  const rows = await db.query<BlockRow>('SELECT * FROM player_block WHERE tenant = $1 AND party_id = $2 ORDER BY created_at DESC LIMIT 100', [tenant, partyId]);
   return rows.map(toBlock);
 }
 
-export async function activeBlock(partyId: string, kind: PaymentKind): Promise<PlayerBlock | null> {
+export async function activeBlock(tenant: string, partyId: string, kind: PaymentKind): Promise<PlayerBlock | null> {
   const row = await db.one<BlockRow>(
-    `SELECT * FROM player_block WHERE party_id = $1 AND lifted_at IS NULL AND kind IN ($2, 'all') AND (until IS NULL OR until > now())
+    `SELECT * FROM player_block WHERE tenant = $1 AND party_id = $2 AND lifted_at IS NULL AND kind IN ($3, 'all') AND (until IS NULL OR until > now())
       ORDER BY until IS NULL DESC, until DESC LIMIT 1`,
-    [partyId, kind],
+    [tenant, partyId, kind],
   );
   return row ? toBlock(row) : null;
 }
 
 /** Refuse when the player is blocked for this kind. The player learns only that support must be contacted. */
 export async function checkBlock(ctx: SecurityContext, kind: PaymentKind): Promise<void> {
-  const b = await activeBlock(ctx.partyId, kind);
+  const b = await activeBlock(rootOf(ctx.fullChain), ctx.partyId, kind);
   if (b) throw new BlockedError(kind);
 }
 
@@ -193,10 +195,10 @@ export async function addBlock(partyId: string, tenant: string, kind: BlockKind,
   return toBlock(row!);
 }
 
-export async function liftBlock(partyId: string, id: number, by: string): Promise<PlayerBlock | null> {
+export async function liftBlock(tenant: string, partyId: string, id: number, by: string): Promise<PlayerBlock | null> {
   const row = await db.one<BlockRow>(
-    'UPDATE player_block SET lifted_at = now(), lifted_by = $3 WHERE id = $1 AND party_id = $2 AND lifted_at IS NULL RETURNING *',
-    [id, partyId, by],
+    'UPDATE player_block SET lifted_at = now(), lifted_by = $4 WHERE id = $1 AND tenant = $2 AND party_id = $3 AND lifted_at IS NULL RETURNING *',
+    [id, tenant, partyId, by],
   );
   return row ? toBlock(row) : null;
 }
@@ -204,7 +206,7 @@ export async function liftBlock(partyId: string, id: number, by: string): Promis
 /** Everything an operator sees about one player: limits, usage, blocks. */
 export async function playerOverview(partyId: string, tenant: string) {
   const [limits, blocks, deposits, withdrawals, settings] = await Promise.all([
-    getPlayerLimits(partyId), listBlocks(partyId), usage(partyId, 'deposit'), usage(partyId, 'withdrawal'), getSettings(tenant),
+    getPlayerLimits(tenant, partyId), listBlocks(tenant, partyId), usage(tenant, partyId, 'deposit'), usage(tenant, partyId, 'withdrawal'), getSettings(tenant),
   ]);
   return {
     partyId,
