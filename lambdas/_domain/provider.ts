@@ -15,6 +15,7 @@ import { getConfig, type ProviderConfig } from '../_common/config';
 import { NotConfiguredError } from '../_common/errors';
 import { upstream } from '../_common/http';
 import type { Destination, Payer } from './types';
+import { sandboxCancelCheckout, sandboxCreateCheckout, sandboxCreatePayout, sandboxGetCheckout, sandboxGetPayout } from './sandbox';
 
 export type CheckoutStatus = 'pending' | 'awaiting_manual_review' | 'completed' | 'rejected' | 'cancelled' | 'expired';
 export type PayoutStatus = 'PENDING' | 'AWAITING_REVIEW' | 'PROCESSING' | 'DONE' | 'ERROR' | 'CANCELLED';
@@ -63,6 +64,9 @@ export async function createCheckout(input: CreateCheckoutInput): Promise<Checko
   const p = await cfg();
   const { returnUrl, cancelUrl } = await getConfig();
   const q = `payment=${encodeURIComponent(input.paymentId)}`;
+  if (p.mode === 'mock') {
+    return sandboxCreateCheckout({ amount: input.amount, successUrl: `${returnUrl}?${q}`, cancelUrl: `${cancelUrl}?${q}&cancelled=1`, country: p.country, payerDocument: input.payer?.document });
+  }
   const body: Record<string, unknown> = {
     country: p.country,
     amount: input.amount.toFixed(2),
@@ -83,11 +87,13 @@ export async function createCheckout(input: CreateCheckoutInput): Promise<Checko
 }
 
 export async function getCheckout(id: string): Promise<Checkout | null> {
+  if ((await cfg()).mode === 'mock') return sandboxGetCheckout(id);
   const { status, data } = await call<Record<string, unknown>>('GET', `/checkouts/${encodeURIComponent(id)}`, undefined, [404]);
   return status === 404 ? null : toCheckout(data);
 }
 
 export async function cancelCheckout(id: string): Promise<void> {
+  if ((await cfg()).mode === 'mock') { sandboxCancelCheckout(id); return; }
   await call('POST', `/checkouts/${encodeURIComponent(id)}/cancel`, undefined, [404, 409, 422]);
 }
 
@@ -100,6 +106,7 @@ export interface CreatePayoutInput {
 
 export async function createPayout(input: CreatePayoutInput): Promise<Payout> {
   const p = await cfg();
+  if (p.mode === 'mock') return sandboxCreatePayout({ amount: input.amount, destination: `${input.destination.type}:${input.destination.value}` });
   const body: Record<string, unknown> = {
     accountId: p.accountId,
     amount: Number(input.amount.toFixed(2)),
@@ -115,6 +122,7 @@ export async function createPayout(input: CreatePayoutInput): Promise<Payout> {
 }
 
 export async function getPayout(id: string): Promise<Payout | null> {
+  if ((await cfg()).mode === 'mock') return sandboxGetPayout(id);
   const { status, data } = await call<Record<string, unknown>>('GET', `/transaction/${encodeURIComponent(id)}/status`, undefined, [404]);
   return status === 404 ? null : toPayout(data);
 }

@@ -2,10 +2,10 @@
  * The wallet, reached ONLY through its API (never its database). Same
  * `{ headers, path, query, body }` payload and `{ ok, data }` envelope whether
  * the wallet runs as Lambdas (`lambda:Invoke` on `${prefix}<slug>`) or as an
- * HTTP service. Authentication is this service's own wallet credential
- * (`x-api-key`), a wallet user whose roles allow reading parties and creating
- * and transitioning operations — the player's JWT is never forwarded, so the
- * player's own permissions cannot move money here.
+ * HTTP service. Authentication is this service's own wallet credential — an
+ * `x-api-key` or a service Bearer token (`WALLET_API_TOKEN`, how the other
+ * services call the NestJS wallet) — never the player's JWT, so the player's
+ * own permissions cannot move money here.
  *
  * Three calls, nothing else:
  *   findAccount(partyId)                 parties-get   {id}?include=accounts
@@ -14,6 +14,7 @@
  */
 
 import { getConfig, type WalletConfig } from '../_common/config';
+import { db } from '../_common/db';
 import { InsufficientFundsError, NotConfiguredError, UpstreamError } from '../_common/errors';
 import { upstream } from '../_common/http';
 import { log } from '../_common/logger';
@@ -57,11 +58,12 @@ let lambdaClient: import('@aws-sdk/client-lambda').LambdaClient | undefined;
 async function invoke<T>(call: Call): Promise<Envelope<T>> {
   const w = await cfg();
   const timeoutMs = (await getConfig()).upstreamTimeoutMs;
+  if (w.mode === 'mock') return mockInvoke<T>(call);
   if (w.mode === 'http') {
     const url = `${w.apiUrl}${call.path}${call.query ? `?${new URLSearchParams(call.query)}` : ''}`;
     const res = await upstream<unknown>('wallet', {
       method: call.method, url, body: call.body, timeoutMs,
-      headers: { 'x-api-key': w.apiKey },
+      headers: authHeaders(w),
       allow: [400, 401, 403, 404, 409, 422],
     });
     // The HTTP runtime unwraps the envelope; rebuild it so both modes look alike.
@@ -74,7 +76,7 @@ async function invoke<T>(call: Call): Promise<Envelope<T>> {
   const { LambdaClient, InvokeCommand } = await import('@aws-sdk/client-lambda');
   lambdaClient ??= new LambdaClient(w.region ? { region: w.region } : {});
   const payload = {
-    headers: { 'x-api-key': w.apiKey },
+    headers: authHeaders(w),
     ...(call.pathParams ? { path: call.pathParams } : {}),
     ...(call.query ? { query: call.query } : {}),
     ...(call.body !== undefined ? { body: call.body } : {}),
@@ -96,6 +98,10 @@ async function invoke<T>(call: Call): Promise<Envelope<T>> {
     log.error('wallet unreachable', { fn: call.slug, err: String(err), ms: Date.now() - started });
     throw new UpstreamError('wallet', 0);
   }
+}
+
+function authHeaders(w: WalletConfig): Record<string, string> {
+  return w.apiToken ? { authorization: `Bearer ${w.apiToken}` } : { 'x-api-key': w.apiKey };
 }
 
 function orThrow<T>(env: Envelope<T>, what: string): T {
@@ -169,4 +175,75 @@ function toOperation(op: Record<string, unknown>): WalletOperation {
     status: String(inner.status ?? ''),
     amount: Number(inner.amount ?? 0),
   };
+}
+
+// ---- sandbox wallet ------------------------------------------------------------
+//
+// `WALLET_MODE=mock`: one account per party, created on first sight with
+// `WALLET_MOCK_BALANCE` (default 100000) in the payout bucket, and the same
+// PENDING -> COMPLETE | CANCEL operations the real wallet runs. State lives in
+// two sandbox tables (`sql/003_sandbox_wallet.sql`) so every process sees it.
+
+interface MockAccount { id: number; party_id: string; available: string; payout: string; blocked: string; pending: string }
+interface MockOperation { identifier: string; account_id: number; type: 'CREDIT' | 'DEBIT'; subtype: string; amount: string; status: string; external_reference: string }
+
+async function mockAccountFor(partyId: string): Promise<MockAccount> {
+  const start = Number(process.env.WALLET_MOCK_BALANCE ?? '100000') || 100000;
+  await db.execute('INSERT INTO sandbox_wallet_account (party_id, available, payout) VALUES ($1, $2, $2) ON CONFLICT (party_id) DO NOTHING', [partyId, start.toFixed(2)]);
+  return (await db.one<MockAccount>('SELECT * FROM sandbox_wallet_account WHERE party_id = $1', [partyId]))!;
+}
+
+function opView(o: MockOperation): Record<string, unknown> {
+  return { identifier: o.identifier, id: o.identifier, status: o.status, amount: Number(o.amount), operationType: o.type, subtype: o.subtype, externalReference: o.external_reference };
+}
+
+async function mockInvoke<T>(call: Call): Promise<Envelope<T>> {
+  const fail = (statusCode: number, type: string, message: string): Envelope<T> => ({ ok: false, statusCode, error: { type, message } });
+  if (call.slug === 'parties-get') {
+    const partyId = call.pathParams?.id ?? '';
+    const a = await mockAccountFor(partyId);
+    return { ok: true, data: { id: partyId, identifier: partyId, defaultCurrency: 'ARS', accounts: [{ id: String(a.id), currencyId: 'ARS', availableBalance: Number(a.available), payoutBalance: Number(a.payout), blockedBalance: Number(a.blocked), pendingBalance: Number(a.pending), cashableBalance: Number(a.payout) }] } as T };
+  }
+  if (call.slug === 'operations-create') {
+    const b = call.body as { amount: number; operationType: 'CREDIT' | 'DEBIT'; subtype: string; destinationAccountId: string; externalReference: string };
+    const existing = await db.one<MockOperation>('SELECT * FROM sandbox_wallet_operation WHERE external_reference = $1', [b.externalReference]);
+    if (existing) return { ok: true, data: opView(existing) as T };
+    const a = await db.one<MockAccount>('SELECT * FROM sandbox_wallet_account WHERE id = $1', [Number(b.destinationAccountId)]);
+    if (!a) return fail(404, 'ENTITY_NOT_FOUND', 'account not found');
+    const amt = b.amount.toFixed(2);
+    if (b.operationType === 'DEBIT') {
+      if (Number(a.payout) < b.amount) return fail(422, 'NOT_ENOUGH_PAYOUT_BALANCE', `Not enough payout balance for account ${a.id}`);
+      await db.execute('UPDATE sandbox_wallet_account SET payout = payout - $2, available = available - $2, blocked = blocked + $2 WHERE id = $1', [a.id, amt]);
+    } else {
+      await db.execute('UPDATE sandbox_wallet_account SET pending = pending + $2 WHERE id = $1', [a.id, amt]);
+    }
+    const identifier = `mockop${Date.now()}${Math.floor(Math.random() * 1e6)}`.padEnd(25, '0').slice(0, 25);
+    const op = (await db.one<MockOperation>(
+      `INSERT INTO sandbox_wallet_operation (identifier, account_id, type, subtype, amount, status, external_reference) VALUES ($1, $2, $3, $4, $5, 'PENDING', $6) RETURNING *`,
+      [identifier, a.id, b.operationType, b.subtype, amt, b.externalReference],
+    ))!;
+    log.info('sandbox wallet operation', { op: identifier, type: op.type, amount: b.amount, account: a.id });
+    return { ok: true, data: opView(op) as T };
+  }
+  if (call.slug === 'operations-transition') {
+    const op = await db.one<MockOperation>('SELECT * FROM sandbox_wallet_operation WHERE identifier = $1', [call.pathParams?.id ?? '']);
+    if (!op) return fail(404, 'ENTITY_NOT_FOUND', 'operation not found');
+    const event = (call.body as { event: WalletEvent }).event;
+    if (op.status !== 'PENDING' && op.status !== 'ACCEPTED') return fail(422, 'INVALID_STATE', `operation is ${op.status}`);
+    let status = op.status;
+    if (event === 'ACCEPT') status = 'ACCEPTED';
+    else if (event === 'COMPLETE') {
+      if (op.type === 'DEBIT') await db.execute('UPDATE sandbox_wallet_account SET blocked = blocked - $2 WHERE id = $1', [op.account_id, op.amount]);
+      else await db.execute('UPDATE sandbox_wallet_account SET pending = pending - $2, available = available + $2 WHERE id = $1', [op.account_id, op.amount]);
+      status = 'COMPLETED';
+    } else {
+      if (op.type === 'DEBIT') await db.execute('UPDATE sandbox_wallet_account SET blocked = blocked - $2, payout = payout + $2, available = available + $2 WHERE id = $1', [op.account_id, op.amount]);
+      else await db.execute('UPDATE sandbox_wallet_account SET pending = pending - $2 WHERE id = $1', [op.account_id, op.amount]);
+      status = event === 'REJECT' ? 'REJECTED' : 'CANCELED';
+    }
+    await db.execute('UPDATE sandbox_wallet_operation SET status = $2 WHERE identifier = $1', [op.identifier, status]);
+    log.info('sandbox wallet transition', { op: op.identifier, event, status });
+    return { ok: true, data: opView({ ...op, status }) as T };
+  }
+  return fail(404, 'ENTITY_NOT_FOUND', `no sandbox function ${call.slug}`);
 }

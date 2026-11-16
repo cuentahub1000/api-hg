@@ -16,11 +16,14 @@ export enum ErrorCodes {
   LIMIT_EXCEEDED = 'LIMIT_EXCEEDED',
   INSUFFICIENT_FUNDS = 'INSUFFICIENT_FUNDS',
   CONFLICT = 'CONFLICT',
+  REQUEST_IN_PROGRESS = 'REQUEST_IN_PROGRESS',
 }
 
 export class PaymentsError extends Error {
   httpErrorStatus = 500;
   description = 'There was an error processing the request';
+  /** Structured, caller-safe data about the refusal (ids, amounts, statuses); never internals. */
+  detail?: unknown;
 
   constructor(message: string) {
     super(message);
@@ -30,7 +33,7 @@ export class PaymentsError extends Error {
 
 /** 400 — bad input. `detail` lists every failing field. */
 export class ValidationError extends PaymentsError {
-  detail: unknown;
+  override detail: unknown;
   constructor(message: string, detail?: unknown) {
     super(message);
     this.name = ErrorCodes.VALIDATION_ERROR;
@@ -120,6 +123,21 @@ export class InsufficientFundsError extends PaymentsError {
     super(message);
     this.name = ErrorCodes.INSUFFICIENT_FUNDS;
     this.description = message;
+    this.httpErrorStatus = 422;
+  }
+}
+
+/**
+ * 422 — the player already has a request in flight that blocks this one.
+ * `detail` names it (`{ id, kind, status, amount, currency, cancellable }`) so
+ * the front-end can say exactly what is blocking and what to do.
+ */
+export class RequestInProgressError extends PaymentsError {
+  constructor(message: string, detail: unknown) {
+    super(message);
+    this.name = ErrorCodes.REQUEST_IN_PROGRESS;
+    this.description = message;
+    this.detail = detail;
     this.httpErrorStatus = 422;
   }
 }

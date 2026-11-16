@@ -19,6 +19,8 @@
 import { log } from './logger';
 
 export interface ProviderConfig {
+  /** `mock`: the in-process sandbox (no provider calls, fake hosted page); `live`: hg.cash. */
+  mode: 'live' | 'mock';
   /** Base URL of the payment provider API, e.g. https://hg.cash/api/v1 */
   apiUrl: string;
   apiToken: string;
@@ -33,14 +35,17 @@ export interface ProviderConfig {
 }
 
 export interface WalletConfig {
-  mode: 'lambda' | 'http';
+  /** `mock`: an in-process wallet with one account per party (local sandbox only). */
+  mode: 'lambda' | 'http' | 'mock';
   /** `lambda`: `${prefix}<slug>`, e.g. `stg88-wallet-`. */
   functionPrefix: string;
   region?: string;
   /** `http`: base URL of the wallet service (NestJS or the HTTP runtime). */
   apiUrl: string;
-  /** Service credential: `x-api-key` of a wallet user allowed to create and transition operations. */
+  /** Service credential: `x-api-key` of a wallet user allowed to create and transition operations... */
   apiKey: string;
+  /** ...or a service Bearer token (`WALLET_API_TOKEN`), as the NestJS wallet is called by the other services. */
+  apiToken: string;
 }
 
 export interface PaymentsConfig {
@@ -55,7 +60,7 @@ export interface PaymentsConfig {
   recheckAfterMs: number;
 }
 
-const SECRET_KEYS = ['PROVIDER_API_TOKEN', 'PROVIDER_WEBHOOK_SECRET', 'WALLET_API_KEY'] as const;
+const SECRET_KEYS = ['PROVIDER_API_TOKEN', 'PROVIDER_WEBHOOK_SECRET', 'WALLET_API_KEY', 'WALLET_API_TOKEN'] as const;
 
 let loaded: Promise<PaymentsConfig> | undefined;
 
@@ -92,8 +97,20 @@ async function build(): Promise<PaymentsConfig> {
     recheckAfterMs: Number(env.PAYMENTS_RECHECK_AFTER_MS ?? '60000') || 60000,
   };
 
-  if (env.PROVIDER_API_URL && env.PROVIDER_API_TOKEN && env.PROVIDER_ACCOUNT_ID) {
+  const providerMode = (env.PROVIDER_MODE ?? 'live').toLowerCase();
+  if (providerMode === 'mock') {
     cfg.provider = {
+      mode: 'mock',
+      apiUrl: stripSlash(env.PROVIDER_SANDBOX_URL ?? 'http://127.0.0.1:9500'),
+      apiToken: '',
+      webhookSecret: env.PROVIDER_WEBHOOK_SECRET ?? 'sandbox',
+      accountId: 'sandbox',
+      webhookUrl: '',
+      country: (env.PAYMENTS_COUNTRY ?? 'AR').toUpperCase(),
+    };
+  } else if (env.PROVIDER_API_URL && env.PROVIDER_API_TOKEN && env.PROVIDER_ACCOUNT_ID) {
+    cfg.provider = {
+      mode: 'live',
       apiUrl: stripSlash(env.PROVIDER_API_URL),
       apiToken: env.PROVIDER_API_TOKEN,
       webhookSecret: env.PROVIDER_WEBHOOK_SECRET ?? '',
@@ -104,18 +121,22 @@ async function build(): Promise<PaymentsConfig> {
   }
 
   const walletMode = (env.WALLET_MODE ?? 'lambda').toLowerCase();
-  if (env.WALLET_API_KEY && (walletMode === 'http' ? env.WALLET_API_URL : env.WALLET_FUNCTION_PREFIX)) {
+  if (walletMode === 'mock') {
+    cfg.wallet = { mode: 'mock', functionPrefix: '', apiUrl: '', apiKey: '', apiToken: '' };
+  } else if ((env.WALLET_API_KEY || env.WALLET_API_TOKEN) && (walletMode === 'http' ? env.WALLET_API_URL : env.WALLET_FUNCTION_PREFIX)) {
     cfg.wallet = {
       mode: walletMode === 'http' ? 'http' : 'lambda',
       functionPrefix: env.WALLET_FUNCTION_PREFIX ?? '',
       region: env.WALLET_REGION || env.AWS_REGION || undefined,
-      apiUrl: stripSlash(env.WALLET_API_URL ?? ''),
-      apiKey: env.WALLET_API_KEY,
+      // The routes carry `/api/v1/...`; accept a base URL given with or without it.
+      apiUrl: stripSlash(env.WALLET_API_URL ?? '').replace(/\/api\/v1$/, ''),
+      apiKey: env.WALLET_API_KEY ?? '',
+      apiToken: env.WALLET_API_TOKEN ?? '',
     };
   }
 
   log.info('configuration loaded', {
-    provider: Boolean(cfg.provider),
+    provider: cfg.provider?.mode ?? false,
     wallet: cfg.wallet?.mode ?? false,
     currency: cfg.currency,
     returnUrl: Boolean(cfg.returnUrl),

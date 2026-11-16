@@ -13,6 +13,7 @@ import { log } from '../lambdas/_common/logger';
 import { getConfig } from '../lambdas/_common/config';
 import { checkEnv } from '../lambdas/_common/db';
 import { compile, match, queryToRecord, toHttp, type Handler } from './router';
+import { handleSandbox } from '../lambdas/_domain/sandbox';
 
 import { handler as depositsCreate } from '../lambdas/deposits-create';
 import { handler as withdrawalsCreate } from '../lambdas/withdrawals-create';
@@ -91,6 +92,14 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   if (pathname === '/healthz' || pathname === '/readyz') {
     send(res, 200, { ok: true });
     return;
+  }
+  if (pathname.startsWith('/sandbox')) {
+    const sb = (await getConfig()).provider?.mode === 'mock' ? await handleSandbox(method, pathname) : null;
+    if (sb) {
+      res.writeHead(sb.status, { 'content-type': sb.contentType, 'cache-control': 'no-store', ...(sb.location ? { location: sb.location } : {}) });
+      res.end(sb.body);
+      return;
+    }
   }
 
   const found = match(routes, method, pathname);

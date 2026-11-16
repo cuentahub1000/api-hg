@@ -1,0 +1,6 @@
+
+> api-hg@0.1.0 local
+> node --env-file=local/lambda.env --watch-path=lambdas --watch-path=local/server.cts local/server.cts
+
+[local] hg lambdas on http://127.0.0.1:9500  (14 functions, secrets from local/secrets.json)
+[local] invoke: POST /2015-03-31/functions/<env>-hg-<slug>/invocations   e.g. local/invoke.sh payments-list

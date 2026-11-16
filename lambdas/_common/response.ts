@@ -40,7 +40,7 @@ export function fail(err: PaymentsError): Fail {
       type: err.name,
       message: clientMessage(status, err.message),
       description: clientMessage(status, err.description),
-      ...(err instanceof ValidationError ? { detail: err.detail } : {}),
+      ...(err instanceof ValidationError || err.detail !== undefined ? { detail: err.detail } : {}),
     },
   };
 }

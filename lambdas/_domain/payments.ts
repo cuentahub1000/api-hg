@@ -17,7 +17,7 @@
 import { randomUUID } from 'node:crypto';
 import { db, type Queryable } from '../_common/db';
 import { getConfig } from '../_common/config';
-import { ConflictError, InvalidStateError, LimitError, NotConfiguredError, NotFoundError, UpstreamError } from '../_common/errors';
+import { ConflictError, InvalidStateError, LimitError, NotConfiguredError, NotFoundError, RequestInProgressError, UpstreamError } from '../_common/errors';
 import { log } from '../_common/logger';
 import { rootOf } from '../_common/chain';
 import type { SecurityContext } from '../_common/auth';
@@ -213,11 +213,17 @@ export async function createWithdrawal(ctx: SecurityContext, input: CreateWithdr
   const s = await getSettings(tenant);
   if (!s.withdrawalsEnabled) throw new NotConfiguredError('withdrawals');
   if (input.amount < s.minWithdrawal || input.amount > s.maxWithdrawal) throw new LimitError(`Amount must be between ${s.minWithdrawal} and ${s.maxWithdrawal}`);
-  const open = await db.one<{ n: string }>(
-    `SELECT count(*)::text AS n FROM payment WHERE party_id = $1 AND kind = 'withdrawal' AND status = ANY($2)`,
+  const open = await db.query<PaymentRow>(
+    `SELECT * FROM payment WHERE party_id = $1 AND kind = 'withdrawal' AND status = ANY($2) ORDER BY created_at DESC`,
     [ctx.partyId, OPEN_STATUSES],
   );
-  if (Number(open?.n ?? 0) >= s.maxOpenWithdrawals) throw new LimitError('You already have an open withdrawal request');
+  if (open.length >= s.maxOpenWithdrawals) {
+    const blocking = open[0];
+    throw new RequestInProgressError('You already have a withdrawal in progress', {
+      id: blocking.id, kind: blocking.kind, status: blocking.status, amount: Number(blocking.amount), currency: blocking.currency,
+      createdAt: blocking.created_at, cancellable: blocking.status === 'awaiting_approval',
+    });
+  }
 
   const account = await wallet.findAccount(ctx.partyId);
   const hold = needsHold('withdrawal', input.amount, s);
@@ -388,7 +394,8 @@ export async function applyPayout(ref: string, status: string, actor: 'provider'
 // ---- reconciliation ------------------------------------------------------------
 
 async function recheckIfStale(row: PaymentRow): Promise<PaymentRow> {
-  if (row.kind !== 'deposit' || row.status !== 'pending' || !row.provider_ref) return row;
+  const open = (row.kind === 'deposit' && row.status === 'pending') || (row.kind === 'withdrawal' && row.status === 'processing');
+  if (!open || !row.provider_ref) return row;
   const { recheckAfterMs } = await getConfig();
   if (Date.now() - Date.parse(row.updated_at) < recheckAfterMs) return row;
   try {
@@ -405,7 +412,7 @@ export async function recheck(row: PaymentRow): Promise<PaymentRow | null> {
   if (row.kind === 'deposit') {
     const co = await provider.getCheckout(row.provider_ref);
     if (!co) return row;
-    if (co.status.toLowerCase() === row.provider_status && row.status !== 'pending') { await patch(db, row.id, {}); return row; }
+    if (co.status.toLowerCase() === row.provider_status) { await patch(db, row.id, {}); return row; }
     return applyCheckout(row.provider_ref, co.status, 'system', { transactionId: co.transactionId, source: 'recheck' });
   }
   if (row.status !== 'processing') return row;

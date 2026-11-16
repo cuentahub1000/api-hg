@@ -157,6 +157,21 @@ async function invoke(req: IncomingMessage, res: ServerResponse, functionName: s
   send(res, 200, result === undefined ? 'null' : JSON.stringify(result), { 'x-amz-executed-version': '$LATEST' });
 }
 
+/**
+ * The fake hosted payment page (`PROVIDER_MODE=mock`). The sandbox state lives
+ * inside the handlers' bundle, so the page is served through a tiny entry
+ * bundled the same way (`lambdas/_domain/sandbox.ts` + `payments.ts`).
+ */
+let sandboxMod: Promise<{ handleSandbox: (m: string, p: string) => Promise<{ status: number; contentType: string; body: string; location?: string } | null> }> | undefined;
+function sandbox() {
+  if (!sandboxMod) {
+    const outfile = path.join(DIST, '_sandbox.js');
+    sandboxMod = esbuild.build({ entryPoints: [path.join(LAMBDAS, '_domain', 'sandbox.ts')], outfile, bundle: true, platform: 'node', target: 'node22', format: 'cjs', sourcemap: 'inline', external: ['@aws-sdk/*', 'pg-native'], logLevel: 'warning' })
+      .then(() => { delete require.cache[require.resolve(outfile)]; return require(outfile); });
+  }
+  return sandboxMod;
+}
+
 /** The provider's callback, delivered the way a Function URL would (raw body, headers). */
 async function webhook(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const raw = await readBody(req);
@@ -194,6 +209,10 @@ const server = http.createServer((req, res) => {
     const m = url.pathname.match(INVOKE);
     if (req.method === 'POST' && m) return invoke(req, res, decodeURIComponent(m[1]));
     if (req.method === 'POST' && url.pathname === '/webhook') return webhook(req, res);
+    if (url.pathname.startsWith('/sandbox')) {
+      const out = await (await sandbox()).handleSandbox(req.method ?? 'GET', url.pathname);
+      if (out) { res.writeHead(out.status, { 'content-type': out.contentType, ...(out.location ? { location: out.location } : {}) }); res.end(out.body); return; }
+    }
     if (req.method === 'POST' && typeof target === 'string' && target.startsWith('secretsmanager.')) return getSecretValue(req, res, target);
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/_health')) {
       return send(res, 200, { functions: slugs().map((s) => `<env>${INFIX}${s}`), webhook: `http://127.0.0.1:${PORT}/webhook`, secrets: Object.keys(secrets()), secretsFile: path.relative(ROOT, SECRETS_FILE) });

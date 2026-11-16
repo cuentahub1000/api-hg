@@ -19,6 +19,7 @@ npm run local                                     # http://127.0.0.1:9500, resta
 PAYMENTS_ENABLED=true
 API_HG_MODE=lambda
 API_HG_LAMBDA_ENDPOINT=http://127.0.0.1:9500
+LAMBDA_ENV_NAME=local
 ```
 
 `ENV_NAME` / `LAMBDA_ENV_NAME` keep whatever value they have: the shim matches
