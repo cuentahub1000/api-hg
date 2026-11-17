@@ -1,4 +1,4 @@
-import { Duration, RemovalPolicy, Stack, StackProps } from 'aws-cdk-lib';
+import { Annotations, Duration, RemovalPolicy, Stack, StackProps } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as rds from 'aws-cdk-lib/aws-rds';
@@ -43,10 +43,16 @@ export class DatabaseStack extends Stack {
     const env = cfg.envName;
     const sizing: DatabaseSizing = { ...DEFAULT_SIZING, ...((this.node.tryGetContext('paymentsDatabase') ?? {})[env] ?? {}) };
 
-    if (!isPresent(cfg.vpcId)) throw new Error(`/${env}/VpcId is not set; the payments database needs the platform VPC`);
+    // SSM lookups are placeholders on the CLI's first synth pass; throwing here
+    // aborts that pass before the CLI can fetch the real values. Report through
+    // Annotations instead: synth completes, the retry gets the values, and a
+    // genuinely missing parameter still fails the deploy with this message.
+    if (!isPresent(cfg.vpcId) || cfg.privateSubnetIds.length < 2) {
+      Annotations.of(this).addError(`/${env}/VpcId, /${env}/PrivateSubnet1 and /${env}/PrivateSubnet2 must be set; the payments database lives in the platform VPC`);
+      return;
+    }
     const vpc = ec2.Vpc.fromLookup(this, 'Vpc', { vpcId: cfg.vpcId });
     const subnets = cfg.privateSubnetIds.map((sid, i) => ec2.Subnet.fromSubnetId(this, `PrivateSubnet${i + 1}`, sid));
-    if (subnets.length < 2) throw new Error('the payments database needs /<env>/PrivateSubnet1 and PrivateSubnet2');
 
     const sg = new ec2.SecurityGroup(this, 'PostgresSg', { vpc, description: `${env} payments postgres`, allowAllOutbound: false });
 
