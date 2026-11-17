@@ -24,8 +24,9 @@
     ],
     "paymentsDatabase": {
       "prod": {
-        "minAcu": 0.5,
-        "maxAcu": 4,
+        "instanceType": "t4g.small",
+        "storageGb": 20,
+        "multiAz": true,
         "deletionProtection": true,
         "backupDays": 14
       }

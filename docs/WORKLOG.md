@@ -113,3 +113,7 @@ Running log of what was built and why. Dates are 2026-11-16 unless noted.
 ## 2026-11-16 — scripts/ssm-status.sh
 
 Added `scripts/ssm-status.sh <env>` (same shape as auth-lambda/wallet-lambda): platform rows, the wallet invoker policy, app-owned rows from bootstrap-ssm.sh, rows written by the deploy (invoker policies, db-*, webhook-function-url) and the three secrets. PENDING vs ERROR kept distinct; fails once on unusable credentials.
+
+## 2026-11-17 — database: provisioned RDS instead of Aurora Serverless v2
+
+`cdk/lib/database-stack.ts` now creates a provisioned RDS Postgres 16 instance (`db.t4g.micro`, 20 GB gp3, single AZ; prod `db.t4g.small` Multi-AZ via `cdk.json` context `paymentsDatabase`). User chose it over Serverless v2 for cost: the service runs 24h at low load, where the 0.5 ACU floor (~$44/month) costs about four times a t4g.micro (~$12/month). Same SSM outputs (`db-host`, `db-port`, `db-name`, `db-secret-name`, `db-sg-id`); function stacks unchanged. Not deployed.

@@ -10,23 +10,32 @@ export interface DatabaseStackProps extends StackProps {
 }
 
 export interface DatabaseSizing {
-  readonly minAcu: number;
-  readonly maxAcu: number;
+  /** RDS instance class, e.g. `t4g.micro`, `t4g.small`. */
+  readonly instanceType: string;
+  readonly storageGb: number;
+  readonly multiAz: boolean;
   readonly deletionProtection: boolean;
   readonly backupDays: number;
 }
 
-const DEFAULT_SIZING: DatabaseSizing = { minAcu: 0.5, maxAcu: 2, deletionProtection: false, backupDays: 7 };
+const DEFAULT_SIZING: DatabaseSizing = {
+  instanceType: 't4g.micro', storageGb: 20, multiAz: false, deletionProtection: false, backupDays: 7,
+};
 
 /**
- * The payments service's own store: one Aurora Serverless v2 Postgres cluster
+ * The payments service's own store: one provisioned RDS Postgres instance
  * `<env>-hg-postgres`, database `payments`, TLS enforced, credential
  * generated into `<env>/HgDatabase/postgres`. Nothing else uses it and
  * it reaches nothing else. Endpoint, port, name, secret name and security
  * group id are published to SSM so the function stacks need no CFN export.
  *
+ * A small provisioned instance is chosen over Aurora Serverless v2 because
+ * the service runs around the clock at low load, where a db.t4g.micro is
+ * roughly a quarter of the price of the 0.5 ACU serverless floor.
+ *
  * Sizing per environment from `cdk.json` context `paymentsDatabase.<env>`
- * (defaults: 0.5–2 ACU, 7 days of backups, no deletion protection).
+ * (defaults: db.t4g.micro, 20 GB gp3, single AZ, 7 days of backups, no
+ * deletion protection).
  */
 export class DatabaseStack extends Stack {
   constructor(scope: Construct, id: string, props: DatabaseStackProps) {
@@ -42,35 +51,38 @@ export class DatabaseStack extends Stack {
 
     const sg = new ec2.SecurityGroup(this, 'PostgresSg', { vpc, description: `${env} payments postgres`, allowAllOutbound: false });
 
-    const engine = rds.DatabaseClusterEngine.auroraPostgres({ version: rds.AuroraPostgresEngineVersion.VER_16_13 });
+    const engine = rds.DatabaseInstanceEngine.postgres({ version: rds.PostgresEngineVersion.VER_16 });
     const parameterGroup = new rds.ParameterGroup(this, 'PostgresParams', {
       engine, description: `${env} payments postgres`, parameters: { 'rds.force_ssl': '1' },
     });
-    const cluster = new rds.DatabaseCluster(this, 'Postgres', {
-      clusterIdentifier: `${env}-hg-postgres`,
+    const instance = new rds.DatabaseInstance(this, 'Postgres', {
+      instanceIdentifier: `${env}-hg-postgres`,
       engine,
       parameterGroup,
+      instanceType: new ec2.InstanceType(sizing.instanceType),
       vpc,
       vpcSubnets: { subnets },
       securityGroups: [sg],
-      serverlessV2MinCapacity: sizing.minAcu,
-      serverlessV2MaxCapacity: sizing.maxAcu,
-      writer: rds.ClusterInstance.serverlessV2('writer'),
+      multiAz: sizing.multiAz,
+      allocatedStorage: sizing.storageGb,
+      storageType: rds.StorageType.GP3,
       credentials: rds.Credentials.fromGeneratedSecret('payments', { secretName: cfg.dbSecretName }),
-      defaultDatabaseName: 'payments',
+      databaseName: 'payments',
       storageEncrypted: true,
-      backup: { retention: Duration.days(sizing.backupDays) },
+      backupRetention: Duration.days(sizing.backupDays),
       deletionProtection: sizing.deletionProtection,
       removalPolicy: RemovalPolicy.SNAPSHOT,
+      publiclyAccessible: false,
+      autoMinorVersionUpgrade: true,
     });
 
     const root = SSM_ROOT(env);
     const publish = (name: string, value: string, description: string) =>
       new StringParameter(this, `${name}Param`, { parameterName: `${root}/${name}`, stringValue: value, description });
-    publish('db-host', cluster.clusterEndpoint.hostname, 'payments postgres writer endpoint');
-    publish('db-port', cluster.clusterEndpoint.port.toString(), 'payments postgres port');
+    publish('db-host', instance.instanceEndpoint.hostname, 'payments postgres endpoint');
+    publish('db-port', instance.instanceEndpoint.port.toString(), 'payments postgres port');
     publish('db-name', 'payments', 'payments database name');
     publish('db-secret-name', cfg.dbSecretName, 'Secrets Manager name of the payments database credential');
-    publish('db-sg-id', sg.securityGroupId, 'security group of the payments postgres cluster (functions get ingress to it)');
+    publish('db-sg-id', sg.securityGroupId, 'security group of the payments postgres instance (functions get ingress to it)');
   }
 }
