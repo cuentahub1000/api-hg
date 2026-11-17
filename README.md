@@ -83,7 +83,7 @@ token deposits and withdrawals answer 503 `NOT_CONFIGURED`; the front-ends'
 ```sh
 scripts/bootstrap-ssm.sh <env>        # app-owned SSM parameters + <env>/HgSecrets
 scripts/ssm-status.sh <env>           # what is set, what is PENDING
-cd cdk && npm install
+cd cdk && npm install                 # root dependencies (esbuild) are installed by synth/deploy:all themselves
 envName=<env> npm run synth
 envName=<env> npm run deploy:all       # resource group -> database -> webhook -> functions, then migrate
 ```
