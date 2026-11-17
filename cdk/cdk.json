@@ -24,9 +24,7 @@
     ],
     "paymentsDatabase": {
       "prod": {
-        "instanceType": "t4g.small",
         "storageGb": 20,
-        "multiAz": true,
         "deletionProtection": true,
         "backupDays": 14
       }

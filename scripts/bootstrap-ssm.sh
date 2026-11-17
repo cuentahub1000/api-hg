@@ -13,6 +13,7 @@
 #   WALLET_MODE (lambda|http) WALLET_FUNCTION_PREFIX WALLET_API_URL
 #   WALLET_INVOKER_POLICY_ARN (optional override; default /<env>/api-wallet-lambda/invoker-policy-arn)
 #   LAMBDA_SG_IDS OTEL_ENDPOINT (optional)
+#   DB_INSTANCE_TYPE (RDS class of the payments database; default t4g.micro)
 #   PROVIDER_API_TOKEN PROVIDER_WEBHOOK_SECRET WALLET_API_KEY WALLET_API_TOKEN DOCUMENT_HASH_KEY   (secret)
 #
 # NOT written here, platform-owned, must exist before any `cdk deploy`:
@@ -48,6 +49,7 @@ put wallet-api-url            "${WALLET_API_URL:-}"
 put wallet-invoker-policy-arn "${WALLET_INVOKER_POLICY_ARN:-}"
 put lambda-sg-ids             "${LAMBDA_SG_IDS:-}"
 put otel-endpoint             "${OTEL_ENDPOINT:-}"
+put db-instance-type          "${DB_INSTANCE_TYPE:-t4g.micro}"
 
 SECRET_NAME="${ENV_NAME}/HgSecrets"
 SECRET_JSON=$(printf '{"PROVIDER_API_TOKEN":"%s","PROVIDER_WEBHOOK_SECRET":"%s","WALLET_API_KEY":"%s","WALLET_API_TOKEN":"%s","DOCUMENT_HASH_KEY":"%s"}' \

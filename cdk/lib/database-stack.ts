@@ -10,8 +10,6 @@ export interface DatabaseStackProps extends StackProps {
 }
 
 export interface DatabaseSizing {
-  /** RDS instance class, e.g. `t4g.micro`, `t4g.small`. */
-  readonly instanceType: string;
   readonly storageGb: number;
   readonly multiAz: boolean;
   readonly deletionProtection: boolean;
@@ -19,7 +17,7 @@ export interface DatabaseSizing {
 }
 
 const DEFAULT_SIZING: DatabaseSizing = {
-  instanceType: 't4g.micro', storageGb: 20, multiAz: false, deletionProtection: false, backupDays: 7,
+  storageGb: 20, multiAz: false, deletionProtection: false, backupDays: 7,
 };
 
 /**
@@ -33,9 +31,10 @@ const DEFAULT_SIZING: DatabaseSizing = {
  * the service runs around the clock at low load, where a db.t4g.micro is
  * roughly a quarter of the price of the 0.5 ACU serverless floor.
  *
- * Sizing per environment from `cdk.json` context `paymentsDatabase.<env>`
- * (defaults: db.t4g.micro, 20 GB gp3, single AZ, 7 days of backups, no
- * deletion protection).
+ * The instance class comes from SSM `/<env>/api-hg-lambda/db-instance-type`
+ * (bootstrap-ssm.sh, default t4g.micro). Storage, Multi-AZ, backups and
+ * deletion protection per environment from `cdk.json` context
+ * `paymentsDatabase.<env>` (defaults: 20 GB gp3, single AZ, 7 days, off).
  */
 export class DatabaseStack extends Stack {
   constructor(scope: Construct, id: string, props: DatabaseStackProps) {
@@ -59,7 +58,7 @@ export class DatabaseStack extends Stack {
       instanceIdentifier: `${env}-hg-postgres`,
       engine,
       parameterGroup,
-      instanceType: new ec2.InstanceType(sizing.instanceType),
+      instanceType: new ec2.InstanceType(cfg.dbInstanceType),
       vpc,
       vpcSubnets: { subnets },
       securityGroups: [sg],

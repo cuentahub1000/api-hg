@@ -117,3 +117,5 @@ Added `scripts/ssm-status.sh <env>` (same shape as auth-lambda/wallet-lambda): p
 ## 2026-11-17 — database: provisioned RDS instead of Aurora Serverless v2
 
 `cdk/lib/database-stack.ts` now creates a provisioned RDS Postgres 16 instance (`db.t4g.micro`, 20 GB gp3, single AZ; prod `db.t4g.small` Multi-AZ via `cdk.json` context `paymentsDatabase`). User chose it over Serverless v2 for cost: the service runs 24h at low load, where the 0.5 ACU floor (~$44/month) costs about four times a t4g.micro (~$12/month). Same SSM outputs (`db-host`, `db-port`, `db-name`, `db-secret-name`, `db-sg-id`); function stacks unchanged. Not deployed.
+
+Instance class moved to SSM `/<env>/api-hg-lambda/db-instance-type` (bootstrap-ssm.sh `DB_INSTANCE_TYPE`, default t4g.micro); `cdk.json` keeps storage/Multi-AZ/backups only.

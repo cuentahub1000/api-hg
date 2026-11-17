@@ -8,7 +8,8 @@
  *       provider-api-url, provider-account-id, provider-webhook-url (optional override),
  *       payments-country, payments-currency, payments-return-url, payments-cancel-url,
  *       wallet-mode (lambda|http), wallet-function-prefix, wallet-api-url,
- *       wallet-invoker-policy-arn (optional override), lambda-sg-ids, otel-endpoint
+ *       wallet-invoker-policy-arn (optional override), lambda-sg-ids, otel-endpoint,
+ *       db-instance-type (RDS class of the payments database, default t4g.micro)
  *     and, written by the database stack:
  *       db-host, db-port, db-name, db-secret-name, db-sg-id, webhook-function-url
  *
@@ -32,6 +33,8 @@ export interface EnvConfig {
   readonly jwtSecretName: string;
   readonly paymentsSecretName: string;
   readonly dbSecretName: string;
+  /** RDS instance class for the payments database, from `db-instance-type` (default t4g.micro). */
+  readonly dbInstanceType: string;
   /** Plain (non-secret) env vars, one per SSM parameter. */
   readonly plainEnv: Readonly<Record<string, string>>;
   /** Wallet reached as Lambdas: attach the wallet's invoker policy to the execution roles. */
@@ -110,6 +113,7 @@ export function loadConfig(scope: Construct, envName: string): EnvConfig {
     jwtSecretName: `${envName}/JWTSecret`,
     paymentsSecretName: `${envName}/HgSecrets`,
     dbSecretName: `${envName}/HgDatabase/postgres`,
+    dbInstanceType: isPresent(synth('db-instance-type')) ? synth('db-instance-type') : 't4g.micro',
     plainEnv,
     walletMode,
     walletInvokerPolicyArn,

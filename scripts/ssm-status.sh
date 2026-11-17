@@ -86,6 +86,7 @@ show app "${ROOT}/wallet-api-url"            "<- only when wallet-mode = http"
 show app "${ROOT}/wallet-invoker-policy-arn" "<- override only; PENDING = the wallet-lambda row above"
 show app "${ROOT}/lambda-sg-ids"             "<- optional override; PENDING = ClientSecurityGroupId (normal)"
 show app "${ROOT}/otel-endpoint"             "<- override only; 'none' disables tracing"
+show app "${ROOT}/db-instance-type"          "<- RDS class of the payments database; PENDING = t4g.micro"
 echo
 echo "Written by the deploy, not by bootstrap:"
 show deploy "${ROOT}/player-invoker-policy-arn"   "<- resource-group stack; attach to front-self's task role"
