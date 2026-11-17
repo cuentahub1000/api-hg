@@ -7,10 +7,10 @@
  */
 import { paymentsHandler } from '../_common/handler';
 import { bodyObject } from '../_common/validate';
-import { amount, destination, document } from '../_common/input';
+import { accountId, amount, destination, document } from '../_common/input';
 import { createWithdrawal } from '../_domain/payments';
 
-export const handler = paymentsHandler('player', async (ctx, event) => {
+export const handler = paymentsHandler('withdrawals-create', async (ctx, event) => {
   const body = bodyObject(event.body);
-  return createWithdrawal(ctx, { amount: amount(body), destination: destination(body), document: document(body) });
+  return createWithdrawal(ctx, { amount: amount(body), accountId: accountId(body), destination: destination(body), document: document(body) });
 });

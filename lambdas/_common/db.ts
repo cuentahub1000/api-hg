@@ -1,14 +1,18 @@
 /**
- * Postgres access to the payments database — this service's own store.
+ * Postgres access. Two connections, one client each, reused across warm
+ * invocations (a Lambda container serves one request at a time):
  *
- * One module-scope `Client` reused across warm invocations (a Lambda container
- * serves one request at a time, so a pool of one is a client). Connection
- * variables, exactly one name each, no fallbacks:
+ *   db        the payments database — this service's own store (read/write)
+ *             DB_HOST DB_PORT DB_NAME, DB_SECRET_ARN (or DB_USER/DB_PASSWORD locally)
+ *   security  the api-security database, READ ONLY, for the per-call session and
+ *             feature checks (`_common/session.ts`, `_common/permissions.ts`)
+ *             SECURITY_DB_HOST SECURITY_DB_PORT SECURITY_DB_NAME,
+ *             SECURITY_DB_SECRET_ARN (or SECURITY_DB_USER/SECURITY_DB_PASSWORD locally)
  *
- *   DB_HOST DB_PORT DB_NAME            where
- *   DB_SECRET_ARN                      Secrets Manager name holding { username, password }
- *     — or, for a local run —  DB_USER DB_PASSWORD
- *   DB_SSL                             `disable` turns TLS off; anything else keeps it on
+ *   DB_SSL    `disable` turns TLS off for both; anything else keeps it on
+ *
+ * The wallet database is never one of these: the wallet is reached only through
+ * its API (`_domain/wallet.ts`).
  *
  * `numeric` columns come back as strings and are converted by the domain
  * layer (`money()`); `int8` stays a string and nothing here uses it.
@@ -32,25 +36,34 @@ export interface Queryable {
 
 type Credentials = { username: string; password: string };
 
-const REQUIRED = ['DB_HOST', 'DB_PORT', 'DB_NAME'] as const;
+/** Environment variable names of one connection. */
+interface Spec { host: string; port: string; database: string; secret: string; user: string; password: string }
 
-export function checkEnv(): void {
-  const missing = REQUIRED.filter((n) => !process.env[n]);
-  if (!process.env.DB_SECRET_ARN && !(process.env.DB_USER && process.env.DB_PASSWORD)) missing.push('DB_SECRET_ARN' as never);
-  if (missing.length > 0) throw new Error(`database environment variables are not set: ${missing.join(', ')}`);
-  const port = Number(process.env.DB_PORT);
-  if (!Number.isFinite(port) || port <= 0) throw new Error(`DB_PORT is not a port number: ${process.env.DB_PORT}`);
+const PAYMENTS: Spec = { host: 'DB_HOST', port: 'DB_PORT', database: 'DB_NAME', secret: 'DB_SECRET_ARN', user: 'DB_USER', password: 'DB_PASSWORD' };
+const SECURITY: Spec = { host: 'SECURITY_DB_HOST', port: 'SECURITY_DB_PORT', database: 'SECURITY_DB_NAME', secret: 'SECURITY_DB_SECRET_ARN', user: 'SECURITY_DB_USER', password: 'SECURITY_DB_PASSWORD' };
+
+function checkSpec(spec: Spec, what: string): void {
+  const missing = [spec.host, spec.port, spec.database].filter((n) => !process.env[n]);
+  if (!process.env[spec.secret] && !(process.env[spec.user] && process.env[spec.password])) missing.push(spec.secret);
+  if (missing.length > 0) throw new Error(`${what} database environment variables are not set: ${missing.join(', ')}`);
+  const port = Number(process.env[spec.port]);
+  if (!Number.isFinite(port) || port <= 0) throw new Error(`${spec.port} is not a port number: ${process.env[spec.port]}`);
 }
 
-let credsCache: Promise<Credentials> | undefined;
+/** The payments database variables (the HTTP runtime checks them at start). */
+export function checkEnv(): void { checkSpec(PAYMENTS, 'payments'); }
+/** The security database variables; `security.configured()` says whether they are set at all. */
+export function checkSecurityEnv(): void { checkSpec(SECURITY, 'security'); }
 
-function credentials(): Promise<Credentials> {
-  if (process.env.DB_USER && process.env.DB_PASSWORD) {
-    return Promise.resolve({ username: process.env.DB_USER, password: process.env.DB_PASSWORD });
-  }
-  if (!credsCache) {
-    const secretId = process.env.DB_SECRET_ARN!;
-    credsCache = (async () => {
+const credsCache = new Map<string, Promise<Credentials>>();
+
+function credentials(spec: Spec): Promise<Credentials> {
+  const user = process.env[spec.user], password = process.env[spec.password];
+  if (user && password) return Promise.resolve({ username: user, password });
+  const secretId = process.env[spec.secret]!;
+  let cached = credsCache.get(secretId);
+  if (!cached) {
+    cached = (async () => {
       const { SecretsManagerClient, GetSecretValueCommand } = await import('@aws-sdk/client-secrets-manager');
       const res = await new SecretsManagerClient({}).send(new GetSecretValueCommand({ SecretId: secretId }));
       if (!res.SecretString) throw new Error(`secret ${secretId} has no SecretString`);
@@ -58,29 +71,38 @@ function credentials(): Promise<Credentials> {
       if (!parsed.username || !parsed.password) throw new Error(`secret ${secretId} is missing username/password`);
       return { username: parsed.username, password: parsed.password };
     })().catch((err) => {
-      credsCache = undefined;
+      credsCache.delete(secretId);
       throw err;
     });
+    credsCache.set(secretId, cached);
   }
-  return credsCache;
+  return cached;
 }
 
 class Connection implements Queryable {
   private client: Client | undefined;
   private connecting: Promise<Client> | undefined;
 
+  constructor(private readonly spec: Spec, private readonly what: string) {}
+
+  /** True when the connection variables are present (the check itself is `handle()`). */
+  configured(): boolean {
+    const e = process.env, s = this.spec;
+    return Boolean(e[s.host] && e[s.port] && e[s.database] && (e[s.secret] || (e[s.user] && e[s.password])));
+  }
+
   private async handle(): Promise<Client> {
     if (this.client) return this.client;
     if (!this.connecting) {
       this.connecting = (async () => {
-        checkEnv();
-        const { username, password } = await credentials();
-        const target = { host: process.env.DB_HOST, port: process.env.DB_PORT, database: process.env.DB_NAME, user: username };
+        checkSpec(this.spec, this.what);
+        const { username, password } = await credentials(this.spec);
+        const target = { db: this.what, host: process.env[this.spec.host], port: process.env[this.spec.port], database: process.env[this.spec.database], user: username };
         try {
           const client = new Client({
-            host: process.env.DB_HOST,
-            port: Number(process.env.DB_PORT),
-            database: process.env.DB_NAME,
+            host: process.env[this.spec.host],
+            port: Number(process.env[this.spec.port]),
+            database: process.env[this.spec.database],
             user: username,
             password,
             // Encrypted but unverified inside the VPC (RDS cert is not in Node's
@@ -155,4 +177,6 @@ class Connection implements Queryable {
   }
 }
 
-export const db = new Connection();
+export const db = new Connection(PAYMENTS, 'payments');
+/** api-security, read only: sessions and role features. Never written, never joined with payments data. */
+export const security = new Connection(SECURITY, 'security');

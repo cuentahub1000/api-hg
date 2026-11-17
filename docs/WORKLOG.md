@@ -123,3 +123,16 @@ Instance class moved to SSM `/<env>/api-hg-lambda/db-instance-type` (bootstrap-s
 ## 2026-11-17 — public webhook on CloudFront (custom domain)
 
 New `cdk/lib/edge-stack.ts` (`<env>-HgWebhookEdge`; always defined, deployed only by `deploy:webhook-edge`, excluded from `deploy:all`, which now selects `<env>-ApiHg*` + `<env>-HgDatabase`; the user rejected making a stack's existence depend on a parameter value): CloudFront distribution with the webhook Function URL as origin, caching disabled, all viewer headers + body forwarded, response headers policy removing `x-amzn-*`/`Server`, CloudFront function answering 403 for any path other than the webhook route, custom domain with the ACM certificate created and DNS-validated by the stack in the Route 53 zone `webhook-hosted-zone-id`/`-name` (user: certificates are infra, not an input), alias record included; stack must deploy in us-east-1. Publishes `webhook-public-url`. CloudFront sends `x-webhook-edge-key` = HgSecrets.WEBHOOK_EDGE_KEY; the webhook function (env `WEBHOOK_EDGE_REQUIRED=1`, set by the CDK when a domain is configured) refuses requests without it, so the Function URL is not usable directly. Functions get `PROVIDER_WEBHOOK_URL=https://<domain>/api/v1/payments/webhook` unless `provider-webhook-url` overrides. `bootstrap-ssm.sh` takes WEBHOOK_DOMAIN / WEBHOOK_HOSTED_ZONE_ID / WEBHOOK_HOSTED_ZONE_NAME and adds missing keys (WEBHOOK_EDGE_KEY) to an existing HgSecrets without touching other values. `ssm-status.sh` section 4 checks it. The ECS/nginx proposal in docs/proposals is superseded. Not deployed, not committed.
+
+## 2026-11-17 — security: session, features, account, caller token
+
+User: "this module is handling money so security checks are really important".
+- `_common/session.ts`: per-call `Session` check in api-security (active, unexpired; 10 s grace for a fresh token; 30 s per-container cache; fails closed with 500 `PERMISSIONS_UNAVAILABLE`).
+- `_common/permissions.ts`: role features `(api-hg, resource, method)` for every operator route that is not a GET (`requiresFeature` in `_routes.ts`); same join as the platform authorizer; 60 s cache.
+- `paymentsHandler(slug, run)`: audience and feature come from `_routes.ts`; all `lambdas/*/index.ts` updated. Checks can be skipped only with `PROVIDER_MODE=mock` + `SANDBOX_SKIP_SECURITY_DB=1` (local shim).
+- `_common/db.ts`: second read-only connection `security` (`SECURITY_DB_*`); CDK sets host/port/name from the platform's `ApiSecurityDatabase*` parameters and grants `ApiSecurityDatabaseReadOnlySecret`.
+- `_domain/wallet.ts`: `WalletAuth` on every call — caller's JWT forwarded; `SERVICE` (`x-api-key`) only from the webhook path. `WALLET_API_TOKEN` removed everywhere. `accountFor(partyId, accountId, auth)`: the account must belong to the token's party, else 403.
+- `deposits-create` / `withdrawals-create`: `accountId` required in the body (`input.accountId`).
+- `ssm-status.sh`: api-security platform rows + secret required. Docs: LAMBDA_API "Security, on every call", README, infra inventory, CLAUDE rules. Tests: `tests/unit/security.test.ts`.
+- front-self: the forms send the player's account id (`CurrentUser.accountId`).
+Not committed, not deployed.

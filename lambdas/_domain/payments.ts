@@ -26,6 +26,7 @@ import { rootOf } from '../_common/chain';
 import type { SecurityContext } from '../_common/auth';
 import { provider, type Checkout, type Payout } from './providers';
 import * as wallet from './wallet';
+import { SERVICE, asCaller, type WalletAuth } from './wallet';
 import { getSettings, needsHold } from './settings';
 import { checkBlock, checkLimits } from './players';
 import {
@@ -117,7 +118,7 @@ async function rowByProviderRef(providerName: string, ref: string, kind: Payment
 
 export async function getForPlayer(ctx: SecurityContext, id: string): Promise<PaymentView> {
   let row = await rowFor(id, { partyId: ctx.partyId });
-  row = await recheckIfStale(row);
+  row = await recheckIfStale(row, asCaller(ctx));
   return playerView(row);
 }
 
@@ -212,7 +213,7 @@ function clientOf(ctx: SecurityContext): string | null {
   return ctx.ip || ctx.userAgent ? JSON.stringify({ ip: ctx.ip, userAgent: ctx.userAgent }) : null;
 }
 
-export interface CreateDepositInput { amount: number; payer?: Payer; locale?: string }
+export interface CreateDepositInput { amount: number; accountId: string; payer?: Payer; locale?: string }
 
 export async function createDeposit(ctx: SecurityContext, input: CreateDepositInput): Promise<PaymentView> {
   const cfg = await getConfig();
@@ -223,7 +224,8 @@ export async function createDeposit(ctx: SecurityContext, input: CreateDepositIn
   await checkBlock(ctx, 'deposit');
   await checkLimits(ctx, 'deposit', input.amount, s);
 
-  const account = await wallet.findAccount(ctx.partyId);
+  const auth = asCaller(ctx);
+  const account = await wallet.accountFor(ctx.partyId, input.accountId, auth);
   const prov = await provider();
   const id = randomUUID();
   const storedPayer = input.payer ? { name: input.payer.name, email: input.payer.email } : null;
@@ -239,7 +241,7 @@ export async function createDeposit(ctx: SecurityContext, input: CreateDepositIn
   // 2. the wallet's pending deposit (visible, not spendable)
   let row: PaymentRow;
   try {
-    const op = await wallet.createOperation({ kind: 'deposit', accountId: account.id, amount: input.amount, externalReference: `pay-${id}` });
+    const op = await wallet.createOperation({ kind: 'deposit', accountId: account.id, amount: input.amount, externalReference: `pay-${id}` }, auth);
     row = await patch(id, { wallet_operation_id: op.identifier, wallet_status: op.status });
     await addEvent(db, id, 'system', 'wallet_pending', { operation: op.identifier });
   } catch (err) {
@@ -259,7 +261,7 @@ export async function createDeposit(ctx: SecurityContext, input: CreateDepositIn
     await addEvent(db, id, 'system', 'checkout_opened', { ref: co.id });
     row = (await rowById(id))!;
   } catch (err) {
-    await cancelWalletQuietly(row, 'provider');
+    await cancelWalletQuietly(row, 'provider', auth);
     await patch(id, { status: 'failed', error_code: 'PROVIDER' });
     await addEvent(db, id, 'system', 'failed', { step: 'provider' });
     throw err;
@@ -267,7 +269,7 @@ export async function createDeposit(ctx: SecurityContext, input: CreateDepositIn
   return playerView(row);
 }
 
-export interface CreateWithdrawalInput { amount: number; destination: Destination; document?: string }
+export interface CreateWithdrawalInput { amount: number; accountId: string; destination: Destination; document?: string }
 
 export async function createWithdrawal(ctx: SecurityContext, input: CreateWithdrawalInput): Promise<PaymentView> {
   const cfg = await getConfig();
@@ -289,7 +291,8 @@ export async function createWithdrawal(ctx: SecurityContext, input: CreateWithdr
     });
   }
 
-  const account = await wallet.findAccount(ctx.partyId);
+  const auth = asCaller(ctx);
+  const account = await wallet.accountFor(ctx.partyId, input.accountId, auth);
   const prov = await provider();
   const hold = needsHold('withdrawal', input.amount, s);
   const id = randomUUID();
@@ -304,7 +307,7 @@ export async function createWithdrawal(ctx: SecurityContext, input: CreateWithdr
   // Block the money now. The wallet refuses when the payout bucket is short.
   let row: PaymentRow;
   try {
-    const op = await wallet.createOperation({ kind: 'withdrawal', accountId: account.id, amount: input.amount, externalReference: `pay-${id}` });
+    const op = await wallet.createOperation({ kind: 'withdrawal', accountId: account.id, amount: input.amount, externalReference: `pay-${id}` }, auth);
     row = await patch(id, { wallet_operation_id: op.identifier, wallet_status: op.status });
     await addEvent(db, id, 'system', 'wallet_blocked', { operation: op.identifier });
   } catch (err) {
@@ -317,7 +320,7 @@ export async function createWithdrawal(ctx: SecurityContext, input: CreateWithdr
     await addEvent(db, id, 'system', 'held');
     return playerView(row);
   }
-  return playerView(await submitPayout(row, 'system'));
+  return playerView(await submitPayout(row, 'system', auth));
 }
 
 /** Player cancels a withdrawal that has not been approved yet. */
@@ -325,25 +328,26 @@ export async function cancelWithdrawal(ctx: SecurityContext, id: string): Promis
   const row = await rowFor(id, { partyId: ctx.partyId });
   if (row.kind !== 'withdrawal') throw new InvalidStateError('Only withdrawals can be cancelled');
   assertStatus(row, ['awaiting_approval']);
-  return playerView(await release(row, 'cancelled', 'player', null));
+  return playerView(await release(row, asCaller(ctx), 'cancelled', 'player', null));
 }
 
 export async function approve(ctx: SecurityContext, id: string, note: string | undefined): Promise<PaymentAdminView> {
   const row = await rowFor(id, { fullChain: ctx.fullChain });
   assertStatus(row, ['awaiting_approval']);
   const actor = `operator:${ctx.partyId}`;
-  if (row.kind === 'deposit') return adminView(await completeDeposit(row, actor, note ?? null));
+  const auth = asCaller(ctx);
+  if (row.kind === 'deposit') return adminView(await completeDeposit(row, auth, actor, note ?? null));
   // withdrawal: mark the decision first (lock), then submit the bank transfer
   const decided = await patch(row.id, { note: note ?? null, decided_by: ctx.partyId }, row.version);
   await addEvent(db, id, actor, 'approved', note ? { note } : undefined);
-  return adminView(await submitPayout(decided, actor));
+  return adminView(await submitPayout(decided, actor, auth));
 }
 
 export async function reject(ctx: SecurityContext, id: string, note: string): Promise<PaymentAdminView> {
   const row = await rowFor(id, { fullChain: ctx.fullChain });
   assertStatus(row, ['awaiting_approval']);
   const { actor, name } = operatorActor(ctx);
-  return adminView(await release(row, 'rejected', actor, note, ctx.partyId, undefined, name));
+  return adminView(await release(row, asCaller(ctx), 'rejected', actor, note, ctx.partyId, undefined, name));
 }
 
 /** Operator cancels a deposit nobody has paid yet: the checkout is cancelled and the pending wallet deposit dropped. */
@@ -351,15 +355,15 @@ export async function cancelDeposit(ctx: SecurityContext, id: string, note: stri
   const row = await rowFor(id, { fullChain: ctx.fullChain });
   if (row.kind !== 'deposit') throw new InvalidStateError('Only deposits can be cancelled here');
   assertStatus(row, ['pending']);
-  return adminView(await release(row, 'cancelled', `operator:${ctx.partyId}`, note, ctx.partyId));
+  return adminView(await release(row, asCaller(ctx), 'cancelled', `operator:${ctx.partyId}`, note, ctx.partyId));
 }
 
 // ---- transitions shared by handlers, webhook and reconcile -----------------
 
 /** Deposit -> completed: credit the wallet, then close the row. */
-async function completeDeposit(row: PaymentRow, actor: string, note: string | null): Promise<PaymentRow> {
+async function completeDeposit(row: PaymentRow, auth: WalletAuth, actor: string, note: string | null): Promise<PaymentRow> {
   if (!row.wallet_operation_id) throw new UpstreamError('wallet', 500);
-  const op = await wallet.transition(row.wallet_operation_id, 'COMPLETE');
+  const op = await wallet.transition(row.wallet_operation_id, 'COMPLETE', auth);
   const updated = await patch(row.id, {
     status: 'completed', wallet_status: op.status, completed: true, note,
     ...(actor.startsWith('operator:') ? { decided_by: actor.slice('operator:'.length) } : {}),
@@ -372,10 +376,10 @@ async function completeDeposit(row: PaymentRow, actor: string, note: string | nu
  * Withdrawal or deposit leaves the pipeline without money moving: cancel the
  * wallet operation (releases a blocked withdrawal / drops a pending deposit).
  */
-async function release(row: PaymentRow, status: 'rejected' | 'cancelled' | 'failed' | 'expired', actor: string, note: string | null, decidedBy?: string, errorCode?: string, actorName?: string): Promise<PaymentRow> {
+async function release(row: PaymentRow, auth: WalletAuth, status: 'rejected' | 'cancelled' | 'failed' | 'expired', actor: string, note: string | null, decidedBy?: string, errorCode?: string, actorName?: string): Promise<PaymentRow> {
   let walletStatus = row.wallet_status;
   if (row.wallet_operation_id) {
-    const op = await wallet.transition(row.wallet_operation_id, 'CANCEL');
+    const op = await wallet.transition(row.wallet_operation_id, 'CANCEL', auth);
     walletStatus = op.status;
   }
   if (row.kind === 'deposit' && row.p_ref && row.status === 'pending' && status === 'cancelled' && actor !== 'provider') {
@@ -390,7 +394,7 @@ async function release(row: PaymentRow, status: 'rejected' | 'cancelled' | 'fail
 }
 
 /** Approved (or never held) withdrawal: ask the provider for the bank transfer. */
-async function submitPayout(row: PaymentRow, actor: string, actorName?: string): Promise<PaymentRow> {
+async function submitPayout(row: PaymentRow, actor: string, auth: WalletAuth, actorName?: string): Promise<PaymentRow> {
   if (!row.destination) throw new InvalidStateError('withdrawal has no destination');
   const prov = await provider();
   try {
@@ -401,14 +405,14 @@ async function submitPayout(row: PaymentRow, actor: string, actorName?: string):
     return updated;
   } catch (err) {
     // The transfer never left: give the money back and surface the failure.
-    const failed = await release(row, 'failed', 'system', null, undefined, 'PROVIDER');
+    const failed = await release(row, auth, 'failed', 'system', null, undefined, 'PROVIDER');
     log.error('payout submit failed', { id: row.id, err: String(err) });
     return failed;
   }
 }
 
 /** Apply a provider checkout status to a deposit (webhook or re-check). */
-export async function applyCheckout(ref: string, status: string, actor: 'provider' | 'system', extra?: Record<string, unknown>): Promise<PaymentRow | null> {
+export async function applyCheckout(ref: string, status: string, actor: 'provider' | 'system', extra?: Record<string, unknown>, auth: WalletAuth = SERVICE): Promise<PaymentRow | null> {
   const prov = await provider();
   const row = await rowByProviderRef(prov.name, ref, 'deposit');
   if (!row) { log.warn('checkout for unknown payment', { ref, status }); return null; }
@@ -428,22 +432,22 @@ export async function applyCheckout(ref: string, status: string, actor: 'provide
         return held;
       }
       await addEvent(db, row.id, actor, 'paid', extra);
-      return completeDeposit((await rowById(row.id))!, 'system', null);
+      return completeDeposit((await rowById(row.id))!, auth, 'system', null);
     }
     case 'under_review': {
       const r = await patch(row.id, { status: 'under_review' });
       await addEvent(db, row.id, actor, 'under_review');
       return r;
     }
-    case 'rejected': return release(row, 'rejected', actor, null, undefined, 'PROVIDER_REJECTED');
-    case 'expired': return release(row, 'expired', actor, null);
-    case 'cancelled': return release(row, 'cancelled', actor, null);
+    case 'rejected': return release(row, auth, 'rejected', actor, null, undefined, 'PROVIDER_REJECTED');
+    case 'expired': return release(row, auth, 'expired', actor, null);
+    case 'cancelled': return release(row, auth, 'cancelled', actor, null);
     case 'pending': return row;
   }
 }
 
 /** Apply a provider payout status to a withdrawal (webhook or re-check). */
-export async function applyPayout(ref: string, status: string, actor: 'provider' | 'system', extra?: { errorCode?: string | null; fee?: number | null }): Promise<PaymentRow | null> {
+export async function applyPayout(ref: string, status: string, actor: 'provider' | 'system', extra?: { errorCode?: string | null; fee?: number | null }, auth: WalletAuth = SERVICE): Promise<PaymentRow | null> {
   const prov = await provider();
   const row = await rowByProviderRef(prov.name, ref, 'withdrawal');
   if (!row) { log.warn('payout for unknown payment', { ref, status }); return null; }
@@ -454,26 +458,26 @@ export async function applyPayout(ref: string, status: string, actor: 'provider'
   switch (prov.mapPayoutStatus(status)) {
     case 'done': {
       if (!row.wallet_operation_id) throw new UpstreamError('wallet', 500);
-      const op = await wallet.transition(row.wallet_operation_id, 'COMPLETE');
+      const op = await wallet.transition(row.wallet_operation_id, 'COMPLETE', auth);
       const r = await patch(row.id, { status: 'completed', wallet_status: op.status, completed: true });
       await addEvent(db, row.id, actor, 'completed', { operation: op.identifier });
       return r;
     }
-    case 'failed': return release(row, 'failed', actor, null, undefined, extra?.errorCode ?? 'PROVIDER_ERROR');
-    case 'cancelled': return release(row, 'cancelled', actor, null);
+    case 'failed': return release(row, auth, 'failed', actor, null, undefined, extra?.errorCode ?? 'PROVIDER_ERROR');
+    case 'cancelled': return release(row, auth, 'cancelled', actor, null);
     default: return (await rowById(row.id))!; // still on its way
   }
 }
 
 // ---- reconciliation ------------------------------------------------------------
 
-async function recheckIfStale(row: PaymentRow): Promise<PaymentRow> {
+async function recheckIfStale(row: PaymentRow, auth: WalletAuth): Promise<PaymentRow> {
   const open = (row.kind === 'deposit' && row.status === 'pending') || (row.kind === 'withdrawal' && row.status === 'processing');
   if (!open || !row.p_ref) return row;
   const { recheckAfterMs } = await getConfig();
   if (Date.now() - Date.parse(row.updated_at) < recheckAfterMs) return row;
   try {
-    return (await recheck(row)) ?? row;
+    return (await recheck(row, auth)) ?? row;
   } catch (err) {
     log.warn('re-check failed', { id: row.id, err: String(err) });
     return row;
@@ -481,20 +485,20 @@ async function recheckIfStale(row: PaymentRow): Promise<PaymentRow> {
 }
 
 /** Ask the provider for the current state of one open payment. */
-export async function recheck(row: PaymentRow): Promise<PaymentRow | null> {
+export async function recheck(row: PaymentRow, auth: WalletAuth = SERVICE): Promise<PaymentRow | null> {
   if (!row.p_ref || isFinal(row.status)) return row;
   const prov = await provider();
   if (row.kind === 'deposit') {
     const co: Checkout | null = await prov.getCheckout(row.p_ref);
     if (!co) return row;
     if (co.status.toLowerCase() === (row.p_status ?? '').toLowerCase()) { await patch(row.id, {}); return row; }
-    return applyCheckout(row.p_ref, co.status, 'system', { transactionId: co.transactionId, source: 'recheck' });
+    return applyCheckout(row.p_ref, co.status, 'system', { transactionId: co.transactionId, source: 'recheck' }, auth);
   }
   if (row.status !== 'processing') return row;
   const po: Payout | null = await prov.getPayout(row.p_ref);
   if (!po) return row;
   if (po.status === row.p_status) { await patch(row.id, {}); return row; }
-  return applyPayout(row.p_ref, po.status, 'system', { errorCode: po.errorCode });
+  return applyPayout(row.p_ref, po.status, 'system', { errorCode: po.errorCode }, auth);
 }
 
 export async function reconcile(ctx: SecurityContext, staleMs = 10 * 60_000): Promise<{ checked: number; updated: number }> {
@@ -508,7 +512,7 @@ export async function reconcile(ctx: SecurityContext, staleMs = 10 * 60_000): Pr
   let updated = 0;
   for (const row of rows) {
     try {
-      const after = await recheck(row);
+      const after = await recheck(row, asCaller(ctx));
       if (after && after.status !== row.status) updated++;
     } catch (err) {
       log.warn('reconcile item failed', { id: row.id, err: String(err) });
@@ -517,10 +521,10 @@ export async function reconcile(ctx: SecurityContext, staleMs = 10 * 60_000): Pr
   return { checked: rows.length, updated };
 }
 
-async function cancelWalletQuietly(row: PaymentRow, reason: string): Promise<void> {
+async function cancelWalletQuietly(row: PaymentRow, reason: string, auth: WalletAuth): Promise<void> {
   if (!row.wallet_operation_id) return;
   try {
-    await wallet.transition(row.wallet_operation_id, 'CANCEL');
+    await wallet.transition(row.wallet_operation_id, 'CANCEL', auth);
   } catch (err) {
     log.error('wallet cancel failed after provider failure', { id: row.id, reason, err: String(err) });
   }

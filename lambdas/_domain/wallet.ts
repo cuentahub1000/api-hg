@@ -2,24 +2,33 @@
  * The wallet, reached ONLY through its API (never its database). Same
  * `{ headers, path, query, body }` payload and `{ ok, data }` envelope whether
  * the wallet runs as Lambdas (`lambda:Invoke` on `${prefix}<slug>`) or as an
- * HTTP service. Authentication is this service's own wallet credential — an
- * `x-api-key` or a service Bearer token (`WALLET_API_TOKEN`, how the other
- * services call the NestJS wallet) — never the player's JWT, so the player's
- * own permissions cannot move money here.
+ * HTTP service.
+ *
+ * Authentication is the CALLER's: every call made for a player or an operator
+ * forwards that caller's JWT (`{ token }`), so the wallet applies the caller's
+ * own permissions and a player can only ever touch their own account. The
+ * service's `x-api-key` (`SERVICE`) is used only where there is no caller:
+ * the provider webhook and the re-checks it triggers.
  *
  * Three calls, nothing else:
- *   findAccount(partyId)                 parties-get   {id}?include=accounts
- *   createOperation(...)                 operations-create
- *   transition(operationId, event)       operations-transition
+ *   accountFor(partyId, accountId, auth) parties-get   {id}?include=accounts, then the one account
+ *   createOperation(..., auth)           operations-create
+ *   transition(operationId, event, auth) operations-transition
  */
 
 import { getConfig, type WalletConfig } from '../_common/config';
 import { db } from '../_common/db';
-import { InsufficientFundsError, NotConfiguredError, UpstreamError } from '../_common/errors';
+import { ForbiddenError, InsufficientFundsError, NotConfiguredError, UpstreamError } from '../_common/errors';
 import { upstream } from '../_common/http';
 import { log } from '../_common/logger';
 
 export type WalletEvent = 'COMPLETE' | 'CANCEL' | 'ACCEPT' | 'REJECT';
+
+/** Who the wallet sees: the caller's JWT, or this service (webhook only). */
+export type WalletAuth = { token: string } | 'service';
+export const SERVICE: WalletAuth = 'service';
+/** The caller of a JWT-authenticated function. */
+export const asCaller = (ctx: { token: string }): WalletAuth => ({ token: ctx.token });
 
 export interface WalletAccount {
   id: string;
@@ -39,6 +48,7 @@ export interface WalletOperation {
 interface Envelope<T> { ok: boolean; data?: T; statusCode?: number; error?: { type?: string; message?: string } }
 
 interface Call {
+  auth: WalletAuth;
   slug: string;
   method: 'GET' | 'POST';
   path: string;
@@ -63,7 +73,7 @@ async function invoke<T>(call: Call): Promise<Envelope<T>> {
     const url = `${w.apiUrl}${call.path}${call.query ? `?${new URLSearchParams(call.query)}` : ''}`;
     const res = await upstream<unknown>('wallet', {
       method: call.method, url, body: call.body, timeoutMs,
-      headers: authHeaders(w),
+      headers: authHeaders(w, call.auth),
       allow: [400, 401, 403, 404, 409, 422],
     });
     // The HTTP runtime unwraps the envelope; rebuild it so both modes look alike.
@@ -76,7 +86,7 @@ async function invoke<T>(call: Call): Promise<Envelope<T>> {
   const { LambdaClient, InvokeCommand } = await import('@aws-sdk/client-lambda');
   lambdaClient ??= new LambdaClient(w.region ? { region: w.region } : {});
   const payload = {
-    headers: authHeaders(w),
+    headers: authHeaders(w, call.auth),
     ...(call.pathParams ? { path: call.pathParams } : {}),
     ...(call.query ? { query: call.query } : {}),
     ...(call.body !== undefined ? { body: call.body } : {}),
@@ -100,8 +110,13 @@ async function invoke<T>(call: Call): Promise<Envelope<T>> {
   }
 }
 
-function authHeaders(w: WalletConfig): Record<string, string> {
-  return w.apiToken ? { authorization: `Bearer ${w.apiToken}` } : { 'x-api-key': w.apiKey };
+function authHeaders(w: WalletConfig, auth: WalletAuth): Record<string, string> {
+  if (auth !== 'service') {
+    if (!auth.token) throw new UpstreamError('wallet', 401);
+    return { authorization: `Bearer ${auth.token}` };
+  }
+  if (!w.apiKey) throw new NotConfiguredError('wallet');
+  return { 'x-api-key': w.apiKey };
 }
 
 function orThrow<T>(env: Envelope<T>, what: string): T {
@@ -116,21 +131,31 @@ function orThrow<T>(env: Envelope<T>, what: string): T {
   throw new UpstreamError('wallet', status);
 }
 
-/** The player's wallet account: the first account of their party (what the player app shows). */
-export async function findAccount(partyId: string): Promise<WalletAccount> {
+/** All accounts of a party, as the wallet answers the caller. */
+export async function accounts(partyId: string, auth: WalletAuth): Promise<WalletAccount[]> {
   const party = orThrow(await invoke<{ accounts?: Array<Record<string, unknown>>; defaultCurrency?: string }>({
-    slug: 'parties-get', method: 'GET', path: `/api/v1/parties/${encodeURIComponent(partyId)}`,
+    auth, slug: 'parties-get', method: 'GET', path: `/api/v1/parties/${encodeURIComponent(partyId)}`,
     pathParams: { id: partyId }, query: { include: 'accounts' },
   }), 'parties-get');
-  const a = party.accounts?.[0];
-  if (!a) throw new UpstreamError('wallet', 404);
-  return {
+  return (party.accounts ?? []).map((a) => ({
     id: String(a.id),
     currencyId: (a.currencyId as string | undefined) ?? party.defaultCurrency ?? null,
     availableBalance: Number(a.availableBalance ?? 0),
     payoutBalance: Number(a.payoutBalance ?? 0),
     cashableBalance: a.cashableBalance === undefined ? null : Number(a.cashableBalance),
-  };
+  }));
+}
+
+/**
+ * The one account a payment is made on. The party is the security boundary
+ * (from the JWT); the account must be one of that party's, otherwise 403.
+ * Nothing is ever picked for the caller.
+ */
+export async function accountFor(partyId: string, accountId: string, auth: WalletAuth): Promise<WalletAccount> {
+  const all = await accounts(partyId, auth);
+  const a = all.find((x) => x.id === String(accountId));
+  if (!a) throw new ForbiddenError('account does not belong to the caller');
+  return a;
 }
 
 export interface CreateOperationInput {
@@ -145,7 +170,7 @@ export interface CreateOperationInput {
  * CREDIT/deposit lands as PENDING (visible, not spendable) until COMPLETE;
  * DEBIT/withdrawal blocks the amount at once until COMPLETE or CANCEL.
  */
-export async function createOperation(input: CreateOperationInput): Promise<WalletOperation> {
+export async function createOperation(input: CreateOperationInput, auth: WalletAuth): Promise<WalletOperation> {
   const body = {
     amount: input.amount,
     operationType: input.kind === 'deposit' ? 'CREDIT' : 'DEBIT',
@@ -154,13 +179,13 @@ export async function createOperation(input: CreateOperationInput): Promise<Wall
     externalReference: input.externalReference,
     origin: 'payments',
   };
-  const op = orThrow(await invoke<Record<string, unknown>>({ slug: 'operations-create', method: 'POST', path: '/api/v1/operations', body }), 'operations-create');
+  const op = orThrow(await invoke<Record<string, unknown>>({ auth, slug: 'operations-create', method: 'POST', path: '/api/v1/operations', body }), 'operations-create');
   return toOperation(op);
 }
 
-export async function transition(operationId: string, event: WalletEvent): Promise<WalletOperation> {
+export async function transition(operationId: string, event: WalletEvent, auth: WalletAuth): Promise<WalletOperation> {
   const op = orThrow(await invoke<Record<string, unknown>>({
-    slug: 'operations-transition', method: 'POST',
+    auth, slug: 'operations-transition', method: 'POST',
     path: `/api/v1/operations/${encodeURIComponent(operationId)}/transition`,
     pathParams: { id: operationId }, body: { event },
   }), 'operations-transition');

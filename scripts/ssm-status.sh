@@ -85,6 +85,10 @@ row required "/${ENV}/PrivateSubnet2" "database subnet 2"
 row "default:one egress SG per function" "/${ENV}/ClientSecurityGroupId"
 row "default:tracing off" "/${ENV}/MainOtelEndpoint"
 secret required "${ENV}/JWTSecret" "the token secret shared with the authorizer"
+row required "/${ENV}/ApiSecurityDatabaseReadOnlyHost" "api-security reader endpoint: session and feature checks on every call"
+row required "/${ENV}/ApiSecurityDatabasePort"         "api-security port"
+row required "/${ENV}/ApiSecurityDatabaseName"         "api-security database name"
+secret required "${ENV}/ApiSecurityDatabaseReadOnlySecret" "read-only credential of api-security"
 echo
 echo "2. Wallet (owned by wallet-lambda; deploy wallet-lambda first)"
 WALLET_MODE=$(get "${ROOT}/wallet-mode" 2>/dev/null || echo lambda)
@@ -111,7 +115,7 @@ row "default:t4g.micro" "${ROOT}/db-instance-type" "RDS class of the payments da
 row "default:the webhook Function URL" "${ROOT}/provider-webhook-url"
 row "default:ClientSecurityGroupId" "${ROOT}/lambda-sg-ids"
 row "default:MainOtelEndpoint" "${ROOT}/otel-endpoint" "('none' disables tracing)"
-secret required "${ENV}/HgSecrets" "created by bootstrap-ssm.sh (PROVIDER_API_TOKEN, PROVIDER_WEBHOOK_SECRET, WALLET_API_KEY, WALLET_API_TOKEN)"
+secret required "${ENV}/HgSecrets" "created by bootstrap-ssm.sh (PROVIDER_API_TOKEN, PROVIDER_WEBHOOK_SECRET, WALLET_API_KEY)"
 echo
 echo "4. Public webhook on a custom domain (CloudFront; deploy:webhook-edge, separate from deploy:all)"
 if WEBHOOK_DOMAIN=$(get "${ROOT}/webhook-domain"); then

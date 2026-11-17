@@ -78,6 +78,16 @@ shell's AWS credentials, or `http` against a wallet URL. Without a provider
 token deposits and withdrawals answer 503 `NOT_CONFIGURED`; the front-ends'
 `API_HG_MODE=mock` previews the screens without this service at all.
 
+### Security
+
+Every JWT call: signature, open session (api-security), audience, and for
+operator writes the role feature `(api-hg, resource, method)`; chain scope
+on operator reads and decisions; `accountId` required and owned by the
+caller on deposits and withdrawals; wallet calls carry the caller's JWT, the
+webhook alone uses the service `x-api-key`. Details in `LAMBDA_API.md`
+("Security, on every call"). Feature rows to seed in api-security: one per
+operator write route in `lambdas/_routes.ts`, resource and method as listed.
+
 ### Deploying (AWS)
 
 ```sh

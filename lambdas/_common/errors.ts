@@ -9,6 +9,7 @@ export enum ErrorCodes {
   VALIDATION_ERROR = 'VALIDATION_ERROR',
   AUTH_ERROR = 'AUTH_ERROR',
   FORBIDDEN = 'FORBIDDEN',
+  PERMISSIONS_UNAVAILABLE = 'PERMISSIONS_UNAVAILABLE',
   ENTITY_NOT_FOUND = 'ENTITY_NOT_FOUND',
   UPSTREAM_ERROR = 'UPSTREAM_ERROR',
   NOT_CONFIGURED = 'NOT_CONFIGURED',
@@ -54,7 +55,21 @@ export class AuthError extends PaymentsError {
   }
 }
 
-/** 403 — authenticated, but not allowed to do this (wrong audience or chain). */
+/**
+ * 500 — the session or feature check could not be made (security database
+ * unreachable). Not a 401/403: the caller may be perfectly legitimate and we
+ * simply cannot tell. Fails closed.
+ */
+export class PermissionsUnavailableError extends PaymentsError {
+  constructor(message: string) {
+    super(message);
+    this.name = ErrorCodes.PERMISSIONS_UNAVAILABLE;
+    this.description = message;
+    this.httpErrorStatus = 500;
+  }
+}
+
+/** 403 — authenticated, but not allowed to do this (wrong audience, chain, feature or account). */
 export class ForbiddenError extends PaymentsError {
   constructor(message: string) {
     super(message);

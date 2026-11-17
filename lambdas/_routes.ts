@@ -55,6 +55,15 @@ export const ROUTES: readonly RouteSpec[] = [
   { slug: 'webhook', method: 'POST', resource: '/api/v1/payments/webhook', audience: 'webhook', timeoutSec: 30, publicUrl: true },
 ];
 
+/**
+ * Operator functions that change something need a Feature row for the caller's
+ * role (`_common/permissions.ts`): every operator route that is not a GET.
+ * Player routes act on the caller's own party only and need no feature.
+ */
+export function requiresFeature(r: RouteSpec): boolean {
+  return r.audience === 'operator' && r.method !== 'GET';
+}
+
 export function routeFor(slug: string): RouteSpec {
   const r = ROUTES.find((x) => x.slug === slug);
   if (!r) throw new Error(`unknown route slug ${slug}`);

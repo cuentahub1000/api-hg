@@ -3,7 +3,9 @@
  * engagement functions:
  *
  *   /<env>/<Name>                    platform-owned (VpcId, PrivateSubnet1/2,
- *                                    ClientSecurityGroupId, MainOtelEndpoint)
+ *                                    ClientSecurityGroupId, MainOtelEndpoint,
+ *                                    ApiSecurityDatabaseReadOnlyHost/Port/Name: the
+ *                                    api-security DB read for session + feature checks)
  *   /<env>/api-hg-lambda/<n>   app-owned, written by scripts/bootstrap-ssm.sh:
  *       provider-api-url, provider-account-id, provider-webhook-url (optional override),
  *       payments-country, payments-currency, payments-return-url, payments-cancel-url,
@@ -17,6 +19,7 @@
  *
  * Secrets never pass through SSM. Two Secrets Manager names are constructed:
  *   <env>/JWTSecret          the platform token secret (already exists)
+ *   <env>/ApiSecurityDatabaseReadOnlySecret   read-only credential of api-security (platform-owned)
  *   <env>/HgSecrets    JSON: PROVIDER_API_TOKEN, PROVIDER_WEBHOOK_SECRET, WALLET_API_KEY
  * plus the database credential the database stack generates
  * (`<env>/HgDatabase/postgres`).
@@ -35,6 +38,8 @@ export interface EnvConfig {
   readonly jwtSecretName: string;
   readonly paymentsSecretName: string;
   readonly dbSecretName: string;
+  /** Read-only credential of the api-security database (platform-owned secret name). */
+  readonly securityDbSecretName: string;
   /** RDS instance class for the payments database, from `db-instance-type` (default t4g.micro). */
   readonly dbInstanceType: string;
   /** Plain (non-secret) env vars, one per SSM parameter. */
@@ -121,6 +126,7 @@ export function loadConfig(scope: Construct, envName: string): EnvConfig {
     jwtSecretName: `${envName}/JWTSecret`,
     paymentsSecretName: `${envName}/HgSecrets`,
     dbSecretName: `${envName}/HgDatabase/postgres`,
+    securityDbSecretName: `${envName}/ApiSecurityDatabaseReadOnlySecret`,
     dbInstanceType: isPresent(synth('db-instance-type')) ? synth('db-instance-type') : 't4g.micro',
     plainEnv,
     walletMode,

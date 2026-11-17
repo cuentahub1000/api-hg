@@ -3,4 +3,4 @@ import { paymentsHandler } from '../_common/handler';
 import { paymentId } from '../_common/input';
 import { cancelWithdrawal } from '../_domain/payments';
 
-export const handler = paymentsHandler('player', async (ctx, event) => cancelWithdrawal(ctx, paymentId(event.path)));
+export const handler = paymentsHandler('withdrawals-cancel', async (ctx, event) => cancelWithdrawal(ctx, paymentId(event.path)));

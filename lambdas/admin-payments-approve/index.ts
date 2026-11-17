@@ -4,7 +4,7 @@ import { bodyObject, optionalString } from '../_common/validate';
 import { paymentId } from '../_common/input';
 import { approve } from '../_domain/payments';
 
-export const handler = paymentsHandler('operator', async (ctx, event) => {
+export const handler = paymentsHandler('admin-payments-approve', async (ctx, event) => {
   const body = bodyObject(event.body);
   return approve(ctx, paymentId(event.path), optionalString(body, 'note', 500));
 });

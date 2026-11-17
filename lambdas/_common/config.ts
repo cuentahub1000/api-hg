@@ -42,10 +42,13 @@ export interface WalletConfig {
   region?: string;
   /** `http`: base URL of the wallet service (NestJS or the HTTP runtime). */
   apiUrl: string;
-  /** Service credential: `x-api-key` of a wallet user allowed to create and transition operations... */
+  /**
+   * The service's own wallet credential (`x-api-key` of an integration user).
+   * Used ONLY where no caller is present: the provider webhook and
+   * re-checks it triggers. Every call made for a player or operator forwards
+   * that caller's JWT instead (`_domain/wallet.ts`).
+   */
   apiKey: string;
-  /** ...or a service Bearer token (`WALLET_API_TOKEN`), as the NestJS wallet is called by the other services. */
-  apiToken: string;
 }
 
 export interface PaymentsConfig {
@@ -64,7 +67,7 @@ export interface PaymentsConfig {
   webhookEdgeKey: string;
 }
 
-const SECRET_KEYS = ['PROVIDER_API_TOKEN', 'PROVIDER_WEBHOOK_SECRET', 'WALLET_API_KEY', 'WALLET_API_TOKEN', 'DOCUMENT_HASH_KEY', 'WEBHOOK_EDGE_KEY'] as const;
+const SECRET_KEYS = ['PROVIDER_API_TOKEN', 'PROVIDER_WEBHOOK_SECRET', 'WALLET_API_KEY', 'DOCUMENT_HASH_KEY', 'WEBHOOK_EDGE_KEY'] as const;
 
 let loaded: Promise<PaymentsConfig> | undefined;
 
@@ -133,16 +136,15 @@ async function build(): Promise<PaymentsConfig> {
     throw new Error('PROVIDER_MODE=mock with a real wallet needs SANDBOX_ALLOW_REAL_WALLET=1 (development wallets only)');
   }
   if (walletMode === 'mock') {
-    cfg.wallet = { mode: 'mock', functionPrefix: '', apiUrl: '', apiKey: '', apiToken: '' };
-  } else if ((env.WALLET_API_KEY || env.WALLET_API_TOKEN) && (walletMode === 'http' ? env.WALLET_API_URL : env.WALLET_FUNCTION_PREFIX)) {
+    cfg.wallet = { mode: 'mock', functionPrefix: '', apiUrl: '', apiKey: '' };
+  } else if (env.WALLET_API_KEY && (walletMode === 'http' ? env.WALLET_API_URL : env.WALLET_FUNCTION_PREFIX)) {
     cfg.wallet = {
       mode: walletMode === 'http' ? 'http' : 'lambda',
       functionPrefix: env.WALLET_FUNCTION_PREFIX ?? '',
       region: env.WALLET_REGION || env.AWS_REGION || undefined,
       // The routes carry `/api/v1/...`; accept a base URL given with or without it.
       apiUrl: stripSlash(env.WALLET_API_URL ?? '').replace(/\/api\/v1$/, ''),
-      apiKey: env.WALLET_API_KEY ?? '',
-      apiToken: env.WALLET_API_TOKEN ?? '',
+      apiKey: env.WALLET_API_KEY,
     };
   }
 

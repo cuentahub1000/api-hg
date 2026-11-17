@@ -4,7 +4,7 @@ import { bodyObject, messageText } from '../_common/validate';
 import { paymentId } from '../_common/input';
 import { reject } from '../_domain/payments';
 
-export const handler = paymentsHandler('operator', async (ctx, event) => {
+export const handler = paymentsHandler('admin-payments-reject', async (ctx, event) => {
   const body = bodyObject(event.body);
   return reject(ctx, paymentId(event.path), messageText(body, 'note', 500));
 });

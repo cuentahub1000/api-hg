@@ -5,8 +5,13 @@
  * the platform secret. Pre-decoded shapes (`x-auth-decoded-token`,
  * `securityContext`) are rejected: nothing sits in front of these functions,
  * so believing one would let any caller with invoke rights assert any
- * identity. This service never reads the security database; `x-api-key` is
- * not accepted.
+ * identity. `x-api-key` is not accepted: the webhook is the only caller
+ * without a user, and it is verified by HMAC.
+ *
+ * After the signature, two more checks run on every call (`_common/handler.ts`):
+ * the token's session must still be open (`_common/session.ts`) and, for an
+ * operator changing something, the caller's role must carry the function's
+ * feature (`_common/permissions.ts`). Both read the api-security database.
  *
  * Audience comes from the token's `metadata.partyType`:
  *
@@ -40,6 +45,14 @@ export interface SecurityContext {
   /** The player's address and browser as the front-end saw them (`x-player-ip`, `x-player-user-agent`); hints for the record, never identity. */
   ip?: string;
   userAgent?: string;
+  /** The caller's JWT, verbatim: forwarded to the wallet so it enforces the caller's own permissions. */
+  token: string;
+  /** `User.id` in api-security (`payload.id`), when the token carries it. */
+  userDbId?: number;
+  /** The `Session` row the token names; checked on every call. Absent = a credential with no session row. */
+  sessionId?: string;
+  /** Token `iat`, seconds. */
+  issuedAt?: number;
 }
 
 export interface PaymentsEvent {
@@ -54,8 +67,9 @@ export async function contextFromEvent(event: PaymentsEvent): Promise<SecurityCo
   const headers = normalizeHeaders(event.headers);
   const authorization = headers.authorization ?? '';
   if (authorization.toLowerCase().startsWith('bearer ')) {
-    const payload = await token.verify(authorization.slice(7).trim());
-    return fromDecodedToken(payload, headers);
+    const raw = authorization.slice(7).trim();
+    const payload = await token.verify(raw);
+    return fromDecodedToken(payload, headers, raw);
   }
   if (event.securityContext !== undefined || event.x_decoded_token !== undefined || headers['x-auth-decoded-token']) {
     throw new AuthError('pre-decoded identities are not accepted: pass a Bearer JWT');
@@ -63,7 +77,7 @@ export async function contextFromEvent(event: PaymentsEvent): Promise<SecurityCo
   throw new AuthError('no auth provided: pass Authorization');
 }
 
-export function fromDecodedToken(payload: Record<string, unknown>, headers: Record<string, string> = {}): SecurityContext {
+export function fromDecodedToken(payload: Record<string, unknown>, headers: Record<string, string> = {}, raw = ''): SecurityContext {
   if (!payload || typeof payload !== 'object') throw new AuthError('decoded token is not an object');
   const metadata = (payload.metadata ?? {}) as Record<string, unknown>;
   if (typeof metadata !== 'object' || Array.isArray(metadata)) throw new AuthError('decoded token metadata is not an object');
@@ -89,6 +103,10 @@ export function fromDecodedToken(payload: Record<string, unknown>, headers: Reco
     brand: headers['x-player-brand'] || undefined,
     ip: (headers['x-player-ip'] || headers['x-forwarded-for'] || '').split(',')[0].trim().slice(0, 64) || undefined,
     userAgent: (headers['x-player-user-agent'] || headers['user-agent'] || '').slice(0, 300) || undefined,
+    token: raw,
+    userDbId: optionalInt(payload.id),
+    sessionId: str(payload.sessionId) || undefined,
+    issuedAt: optionalInt(payload.iat),
   };
 }
 
@@ -108,4 +126,9 @@ function normalizeHeaders(headers: unknown): Record<string, string> {
 
 function str(v: unknown): string {
   return v === null || v === undefined ? '' : String(v);
+}
+
+function optionalInt(v: unknown): number | undefined {
+  const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN;
+  return Number.isInteger(n) ? n : undefined;
 }

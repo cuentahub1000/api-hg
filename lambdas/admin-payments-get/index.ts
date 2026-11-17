@@ -3,4 +3,4 @@ import { paymentsHandler } from '../_common/handler';
 import { paymentId } from '../_common/input';
 import { getForOperator } from '../_domain/payments';
 
-export const handler = paymentsHandler('operator', async (ctx, event) => getForOperator(ctx, paymentId(event.path)));
+export const handler = paymentsHandler('admin-payments-get', async (ctx, event) => getForOperator(ctx, paymentId(event.path)));

@@ -6,7 +6,7 @@ import { partyIdParam } from '../_common/party';
 import { assertPartyInScope } from '../_domain/payments';
 import { liftBlock, playerOverview } from '../_domain/players';
 
-export const handler = paymentsHandler('operator', async (ctx, event) => {
+export const handler = paymentsHandler('admin-player-unblock', async (ctx, event) => {
   const partyId = partyIdParam(event.path);
   const tenant = await assertPartyInScope(ctx, partyId);
   const blockId = optionalInt(event.path, 'blockId', 0, 1, 2_000_000_000);

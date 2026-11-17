@@ -7,6 +7,14 @@ import type { ListFilter } from '../_domain/payments';
 type Bag = Record<string, unknown> | undefined;
 
 /** Positive amount with at most two decimals. */
+/** The wallet account the payment is made on. Required: nothing is picked for the caller. */
+export function accountId(bag: Bag): string {
+  const v = bag?.accountId;
+  const str = typeof v === 'number' ? String(v) : typeof v === 'string' ? v.trim() : '';
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(str)) throw new ValidationError('Validation failed', 'accountId is required');
+  return str;
+}
+
 export function amount(bag: Bag, key = 'amount'): number {
   const raw = bag?.[key];
   const n = typeof raw === 'number' ? raw : typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : NaN;

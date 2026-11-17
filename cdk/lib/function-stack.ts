@@ -24,6 +24,9 @@ export interface FunctionStackProps extends StackProps {
  * access. The database security group gets an ingress rule from the
  * function's security group.
  *
+ * Every JWT function also reads api-security (read-only: `SECURITY_DB_*`) for
+ * the per-call session and feature checks.
+ *
  * `webhook` additionally gets a public Function URL (the provider calls it;
  * the handler verifies the HMAC) published at
  * `/<env>/api-hg-lambda/webhook-function-url`, which every other
@@ -78,6 +81,15 @@ export class FunctionStack extends Stack {
       env.PROVIDER_WEBHOOK_URL = cfg.webhookDomain ? `https://${cfg.webhookDomain}${WEBHOOK_PATH}` : deployParam('webhook-function-url');
     }
     if (fn.slug === 'webhook' && cfg.webhookDomain) env.WEBHOOK_EDGE_REQUIRED = '1';
+    // Every JWT-authenticated function checks the caller's session and (operator
+    // writes) role features against api-security, read-only, reader endpoint.
+    const checksSecurity = fn.slug !== 'webhook' && fn.slug !== 'migrate';
+    if (checksSecurity) {
+      env.SECURITY_DB_HOST = StringParameter.valueForStringParameter(this, `/${cfg.envName}/ApiSecurityDatabaseReadOnlyHost`);
+      env.SECURITY_DB_PORT = StringParameter.valueForStringParameter(this, `/${cfg.envName}/ApiSecurityDatabasePort`);
+      env.SECURITY_DB_NAME = StringParameter.valueForStringParameter(this, `/${cfg.envName}/ApiSecurityDatabaseName`);
+      env.SECURITY_DB_SECRET_ARN = cfg.securityDbSecretName;
+    }
     if (cfg.otelEndpoint !== '') {
       env.OTEL_EXPORTER_OTLP_ENDPOINT = cfg.otelEndpoint;
       env.OTEL_EXPORTER_OTLP_PROTOCOL = 'http/protobuf';
@@ -104,7 +116,7 @@ export class FunctionStack extends Stack {
     role.addToPolicy(new iam.PolicyStatement({
       sid: 'ReadSecrets',
       actions: ['secretsmanager:GetSecretValue'],
-      resources: [cfg.jwtSecretName, cfg.paymentsSecretName, cfg.dbSecretName].map((secretName) =>
+      resources: [cfg.jwtSecretName, cfg.paymentsSecretName, cfg.dbSecretName, ...(checksSecurity ? [cfg.securityDbSecretName] : [])].map((secretName) =>
         this.formatArn({ service: 'secretsmanager', resource: 'secret', resourceName: `${secretName}*`, arnFormat: ArnFormat.COLON_RESOURCE_NAME })),
     }));
     if (vpc) role.addManagedPolicy(iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaVPCAccessExecutionRole'));

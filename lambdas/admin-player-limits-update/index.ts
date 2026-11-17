@@ -5,7 +5,7 @@ import { partyIdParam } from '../_common/party';
 import { assertPartyInScope } from '../_domain/payments';
 import { playerOverview, updatePlayerLimits } from '../_domain/players';
 
-export const handler = paymentsHandler('operator', async (ctx, event) => {
+export const handler = paymentsHandler('admin-player-limits-update', async (ctx, event) => {
   const partyId = partyIdParam(event.path);
   const tenant = await assertPartyInScope(ctx, partyId);
   await updatePlayerLimits(partyId, tenant, bodyObject(event.body), ctx.partyId);

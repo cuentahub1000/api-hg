@@ -20,6 +20,29 @@ party and wallet account; operators see parties inside their own chain
 subtree. The one endpoint without a JWT is the provider webhook, verified by
 HMAC.
 
+## Security, on every call
+
+1. **JWT.** `Authorization: Bearer <jwt>` signed with the platform secret. Party,
+   chain and `partyType` (player / operator) come from the token only; nothing
+   in the request names the caller. 401 `AUTH_ERROR` otherwise.
+2. **Session.** The `Session` row the token names (`sessionId` claim) must be
+   `active` and unexpired in api-security. 401 `AUTH_ERROR` when it was ended;
+   500 `PERMISSIONS_UNAVAILABLE` when the check cannot be made (fails closed).
+3. **Audience.** Player routes take player tokens, admin routes operator tokens.
+   403 `FORBIDDEN`.
+4. **Feature** (operator routes that change something: approve, reject, cancel,
+   settings update, reconcile, player limits and blocks). An ACTIVE Feature of
+   one of the caller's ACTIVE roles must ALLOW `(api-hg, <resource>, <method>)`
+   with the route's resource and method as listed above. 403 `FORBIDDEN`.
+5. **Chain.** Operators see and decide only payments of players under their own
+   chain; a payment outside it is a 404.
+6. **Account.** Player requests name the `accountId`; it must be one of the
+   token's party's accounts (403 `FORBIDDEN`). The party is the security
+   boundary, the account is what the payment is made on and listed by.
+7. **Wallet.** Every wallet call made for a caller forwards the caller's JWT,
+   so the wallet enforces the caller's own permissions. Only the provider
+   webhook, which has no caller, uses the service's `x-api-key`.
+
 ## Envelope (Lambda)
 
 ```jsonc
@@ -134,6 +157,7 @@ The amount is **blocked in the wallet the moment the request is accepted**
 
 ```jsonc
 { "amount": 1500.5,
+  "accountId": "123",                   // required: the wallet account the deposit lands on; must belong to the caller (403 otherwise)
   "payer": { "document": "30123456", "name": "Ana Perez", "email": "ana@example.com" } } // optional; document required for some countries
 ```
 
@@ -149,6 +173,7 @@ disabled. `payer.document` is forwarded to the provider and kept only as
 
 ```jsonc
 { "amount": 2000,
+  "accountId": "123",                   // required: the wallet account the money leaves; must belong to the caller (403 otherwise)
   "destination": { "type": "cbu", "value": "0170099220000067797370", "holderName": "Ana Perez" } }
 ```
 

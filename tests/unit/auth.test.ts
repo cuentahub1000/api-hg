@@ -20,7 +20,7 @@ describe('fromDecodedToken', () => {
 describe('paymentsHandler', () => {
   before(() => { process.env.JWT_SECRET = SECRET; });
   it('rejects a missing token with 401 and a wrong audience with 403', async () => {
-    const h = paymentsHandler('operator', async () => 'ok');
+    const h = paymentsHandler('admin-payments-list', async () => 'ok');
     const noToken = await h({});
     assert.equal(noToken.ok, false);
     if (!noToken.ok) assert.equal(noToken.statusCode, 401);
@@ -31,13 +31,13 @@ describe('paymentsHandler', () => {
     assert.deepEqual(agent, { ok: true, data: 'ok' });
   });
   it('refuses pre-decoded identities', async () => {
-    const h = paymentsHandler('player', async () => 'ok');
+    const h = paymentsHandler('payments-list', async () => 'ok');
     const r = await h({ headers: { 'x-auth-decoded-token': JSON.stringify(PLAYER) } });
     assert.equal(r.ok, false);
     if (!r.ok) assert.equal(r.statusCode, 401);
   });
   it('hides 5xx detail and keeps 4xx messages', async () => {
-    const boom = paymentsHandler('player', async () => { throw new Error('ECONNREFUSED 10.0.0.1:5432'); });
+    const boom = paymentsHandler('payments-list', async () => { throw new Error('ECONNREFUSED 10.0.0.1:5432'); });
     const r = await boom({ headers: { authorization: `Bearer ${sign(PLAYER)}` } });
     assert.equal(r.ok, false);
     if (!r.ok) { assert.equal(r.statusCode, 500); assert.ok(!r.error.message.includes('10.0.0.1')); }

@@ -17,12 +17,15 @@
 #   WEBHOOK_DOMAIN WEBHOOK_HOSTED_ZONE_ID WEBHOOK_HOSTED_ZONE_NAME
 #       public webhook on CloudFront (deploy:webhook-edge): the custom domain and the
 #       Route 53 zone (in this account) it belongs to; certificate and alias are created by the stack
-#   PROVIDER_API_TOKEN PROVIDER_WEBHOOK_SECRET WALLET_API_KEY WALLET_API_TOKEN   (secret)
+#   PROVIDER_API_TOKEN PROVIDER_WEBHOOK_SECRET WALLET_API_KEY   (secret; WALLET_API_KEY = x-api-key of the
+#       integration user, used by the webhook only — every other wallet call forwards the caller's JWT)
 #   DOCUMENT_HASH_KEY WEBHOOK_EDGE_KEY are generated when absent (secret)
 #
 # NOT written here, platform-owned, must exist before any `cdk deploy`:
 #   /<env>/VpcId /<env>/PrivateSubnet1 /<env>/PrivateSubnet2
 #   /<env>/ClientSecurityGroupId (optional)   <env>/JWTSecret (secret)
+#   /<env>/ApiSecurityDatabaseReadOnlyHost /<env>/ApiSecurityDatabasePort /<env>/ApiSecurityDatabaseName
+#   <env>/ApiSecurityDatabaseReadOnlySecret (secret)   — api-security, read for session + feature checks
 # Written by the database stack, not here: db-host db-port db-name db-secret-name db-sg-id.
 set -euo pipefail
 
@@ -59,8 +62,8 @@ put webhook-hosted-zone-id    "${WEBHOOK_HOSTED_ZONE_ID:-}"
 put webhook-hosted-zone-name  "${WEBHOOK_HOSTED_ZONE_NAME:-}"
 
 SECRET_NAME="${ENV_NAME}/HgSecrets"
-SECRET_JSON=$(printf '{"PROVIDER_API_TOKEN":"%s","PROVIDER_WEBHOOK_SECRET":"%s","WALLET_API_KEY":"%s","WALLET_API_TOKEN":"%s","DOCUMENT_HASH_KEY":"%s","WEBHOOK_EDGE_KEY":"%s"}' \
-  "${PROVIDER_API_TOKEN:-}" "${PROVIDER_WEBHOOK_SECRET:-}" "${WALLET_API_KEY:-}" "${WALLET_API_TOKEN:-}" "${DOCUMENT_HASH_KEY:-$(openssl rand -hex 32)}" "${WEBHOOK_EDGE_KEY:-$(openssl rand -hex 32)}")
+SECRET_JSON=$(printf '{"PROVIDER_API_TOKEN":"%s","PROVIDER_WEBHOOK_SECRET":"%s","WALLET_API_KEY":"%s","DOCUMENT_HASH_KEY":"%s","WEBHOOK_EDGE_KEY":"%s"}' \
+  "${PROVIDER_API_TOKEN:-}" "${PROVIDER_WEBHOOK_SECRET:-}" "${WALLET_API_KEY:-}" "${DOCUMENT_HASH_KEY:-$(openssl rand -hex 32)}" "${WEBHOOK_EDGE_KEY:-$(openssl rand -hex 32)}")
 if aws secretsmanager describe-secret --secret-id "$SECRET_NAME" >/dev/null 2>&1; then
   if [[ "$OVERWRITE" == "--overwrite" ]]; then
     aws secretsmanager put-secret-value --secret-id "$SECRET_NAME" --secret-string "$SECRET_JSON" >/dev/null
