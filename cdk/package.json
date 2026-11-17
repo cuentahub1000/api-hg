@@ -31,7 +31,7 @@
     "deploy:webhook-edge": "cdk deploy ${envName:?Set envName=<env> first}-HgWebhookEdge -c config=$envName",
     "deploy:migrate": "cdk deploy ${envName:?Set envName=<env> first}-ApiHgMigrate -c config=$envName",
     "deploy:all": "cdk deploy \"${envName:?Set envName=<env> first}-ApiHg*\" \"${envName}-HgDatabase\" --require-approval never -c config=$envName",
-    "migrate": "aws lambda invoke --function-name ${envName:?Set envName=<env> first}-hg-migrate --cli-binary-format raw-in-base64-out --payload '{}' /dev/stdout",
+    "migrate": "aws lambda invoke --function-name ${envName:?Set envName=<env> first}-hg-migrate --cli-binary-format raw-in-base64-out --payload '{}' /tmp/hg-migrate.out >/dev/null && cat /tmp/hg-migrate.out && echo",
     "destroy:functions": "cdk destroy \"${envName:?Set envName=<env> first}-ApiHg*\" --exclusively -c config=$envName",
     "destroy:all": "cdk destroy --all -c config=${envName:?Set envName=<env> first}",
     "deploy:admin-payments-cancel": "cdk deploy ${envName:?Set envName=<env> first}-ApiHgAdminPaymentsCancel -c config=$envName",
