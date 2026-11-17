@@ -15,7 +15,7 @@
 | 11 | Resource group `<env>-api-hg-lambda` (tags Application=api-hg-lambda, Environment) | same stack | console / cost | — |
 | 12 | Log groups `/aws/lambda/<env>-hg-<slug>`, 14 days, destroyed with the stack (`RETAIN_LOG_GROUPS=true` to keep) | function stacks | CloudWatch | logs |
 | 13 | Wallet invoker policy `/<env>/api-wallet-lambda/invoker-policy-arn` (owned by wallet-lambda) | read at deploy | execution roles when `WALLET_MODE=lambda` | — |
-| 14 | ACM certificate for `webhook-domain` (DNS-validated in Route 53 zone `webhook-hosted-zone-id`), CloudFront distribution on that domain, origin = webhook Function URL, Route 53 alias, response headers policy `<env>-hg-webhook-edge` (drops `x-amzn-*`), CloudFront function `<env>-hg-webhook-edge-deny` (403 off the webhook path); publishes `webhook-public-url` | CDK stack `<env>-HgWebhookEdge`, deployed only by `deploy:webhook-edge`, never by `deploy:all` | the provider | — |
+| 14 | ACM certificate for `webhook-domain` (DNS-validated in Route 53 zone `webhook-hosted-zone-id`), CloudFront distribution on that domain, origin = webhook Function URL, Route 53 alias, response headers policy `<env>-hg-webhook-edge` (drops `Server`; CloudFront cannot remove `x-amzn-*`), CloudFront function `<env>-hg-webhook-edge-deny` (403 off the webhook path); publishes `webhook-public-url` | CDK stack `<env>-HgWebhookEdge`, deployed only by `deploy:webhook-edge`, never by `deploy:all` | the provider | — |
 | 15 | Local: Postgres container `hg-postgres` on 5433 (`infra/docker-compose.yml`) | developer machine | `npm run server` | local data |
 
 Platform-owned, must exist before deploying: `/<env>/VpcId`,

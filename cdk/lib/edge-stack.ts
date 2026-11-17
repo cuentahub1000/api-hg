@@ -24,7 +24,8 @@ export const EDGE_KEY_HEADER = 'x-webhook-edge-key';
  * included; origin = the webhook Function URL. Deployed only by
  * `npm run deploy:webhook-edge`, never by `deploy:all`. Caching off, every header
  * and the body forwarded untouched (the function verifies the HMAC over the
- * raw body), Lambda's `x-amzn-*` response headers removed. CloudFront sends
+ * raw body). The Function URL's `x-amzn-*` response headers cannot be removed
+ * by CloudFront (reserved headers); only `Server` is dropped. CloudFront sends
  * `x-webhook-edge-key` = HgSecrets.WEBHOOK_EDGE_KEY and the function refuses
  * requests without it, so the Function URL is unusable directly.
  *
@@ -63,8 +64,10 @@ export class EdgeStack extends Stack {
 
     const responseHeaders = new cloudfront.ResponseHeadersPolicy(this, 'ResponseHeaders', {
       responseHeadersPolicyName: `${cfg.envName}-hg-webhook-edge`,
-      comment: 'Drop the headers that identify the origin.',
-      removeHeaders: ['x-amzn-RequestId', 'x-amzn-Trace-Id', 'x-amzn-Remapped-content-length', 'x-amzn-Remapped-connection', 'x-amzn-Remapped-date', 'x-amz-apigw-id', 'Server'],
+      // CloudFront cannot remove x-amz-*/x-amzn-* headers (reserved); those from
+      // the Function URL reach the caller. Only `Server` can be dropped here.
+      comment: 'Drop the Server header.',
+      removeHeaders: ['Server'],
     });
 
     // Only the webhook path reaches the origin. Everything else is answered at the edge.
