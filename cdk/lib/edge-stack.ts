@@ -20,7 +20,7 @@ export const EDGE_KEY_HEADER = 'x-webhook-edge-key';
 /**
  * The public face of the webhook: a CloudFront distribution on the custom
  * domain `webhook-domain`, with its ACM certificate created and DNS-validated
- * in the Route 53 zone `webhook-hosted-zone-id`, alias record
+ * in the Route 53 zone `webhook-hosted-zone-id`/`-name`, alias record
  * included; origin = the webhook Function URL. Deployed only by
  * `npm run deploy:webhook-edge`, never by `deploy:all`. Caching off, every header
  * and the body forwarded untouched (the function verifies the HMAC over the
@@ -38,16 +38,17 @@ export class EdgeStack extends Stack {
 
     // Inputs are checked here, not by making the stack disappear: a missing
     // value fails `deploy:webhook-edge` with this message and nothing else.
-    if (!cfg.webhookDomain || !cfg.webhookHostedZoneId) {
-      Annotations.of(this).addError(`${root}/webhook-domain and ${root}/webhook-hosted-zone-id must be set before deploying the webhook edge`);
+    if (!cfg.webhookDomain || !cfg.webhookHostedZoneId || !cfg.webhookHostedZoneName) {
+      Annotations.of(this).addError(`${root}/webhook-domain, ${root}/webhook-hosted-zone-id and ${root}/webhook-hosted-zone-name must be set before deploying the webhook edge`);
       return;
     }
     if (this.region !== 'us-east-1') {
       Annotations.of(this).addError('the webhook edge stack must be deployed in us-east-1: CloudFront certificates live there');
       return;
     }
-    // The zone name is read from the zone itself at synth (context lookup).
-    const zone = route53.HostedZone.fromLookup(this, 'Zone', { domainName: cfg.webhookHostedZoneName });
+    const zone = route53.HostedZone.fromHostedZoneAttributes(this, 'Zone', {
+      hostedZoneId: cfg.webhookHostedZoneId, zoneName: cfg.webhookHostedZoneName,
+    });
     const certificate = new acm.Certificate(this, 'Certificate', {
       domainName: cfg.webhookDomain,
       validation: acm.CertificateValidation.fromDns(zone),
