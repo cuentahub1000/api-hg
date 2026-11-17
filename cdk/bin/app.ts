@@ -4,6 +4,7 @@ import * as cdk from 'aws-cdk-lib';
 import { FunctionStack } from '../lib/function-stack';
 import { ResourceGroupStack } from '../lib/resource-group-stack';
 import { DatabaseStack } from '../lib/database-stack';
+import { EdgeStack } from '../lib/edge-stack';
 import { FUNCTIONS, loadConfig, pascal } from '../lib/config';
 
 const app = new cdk.App();
@@ -38,3 +39,10 @@ for (const fn of FUNCTIONS) {
 }
 const webhook = stacks.get('webhook')!;
 for (const [slug, stack] of stacks) if (slug !== 'webhook' && slug !== 'migrate') stack.addDependency(webhook);
+
+// Public webhook on a custom domain. Always defined, never part of
+// `deploy:all`: it is deployed (and removed) only by its own explicit command,
+// so no parameter value can create or destroy infrastructure.
+const edge = new EdgeStack(app, `${envName}-HgWebhookEdge`, { env, cfg, webhookUrl: webhook.functionUrl! });
+edge.addDependency(webhook);
+cdk.Tags.of(edge).add('Component', 'payments-webhook-edge');

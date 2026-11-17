@@ -60,9 +60,11 @@ export interface PaymentsConfig {
   recheckAfterMs: number;
   /** HMAC key for the national-id hash stored on payments; empty = store nothing. */
   documentHashKey: string;
+  /** When set, the webhook accepts only requests carrying this value in `x-webhook-edge-key` (sent by CloudFront). */
+  webhookEdgeKey: string;
 }
 
-const SECRET_KEYS = ['PROVIDER_API_TOKEN', 'PROVIDER_WEBHOOK_SECRET', 'WALLET_API_KEY', 'WALLET_API_TOKEN', 'DOCUMENT_HASH_KEY'] as const;
+const SECRET_KEYS = ['PROVIDER_API_TOKEN', 'PROVIDER_WEBHOOK_SECRET', 'WALLET_API_KEY', 'WALLET_API_TOKEN', 'DOCUMENT_HASH_KEY', 'WEBHOOK_EDGE_KEY'] as const;
 
 let loaded: Promise<PaymentsConfig> | undefined;
 
@@ -98,6 +100,7 @@ async function build(): Promise<PaymentsConfig> {
     upstreamTimeoutMs: Number(env.PAYMENTS_UPSTREAM_TIMEOUT_MS ?? '10000') || 10000,
     recheckAfterMs: Number(env.PAYMENTS_RECHECK_AFTER_MS ?? '60000') || 60000,
     documentHashKey: env.DOCUMENT_HASH_KEY ?? '',
+    webhookEdgeKey: env.WEBHOOK_EDGE_REQUIRED === '1' ? (env.WEBHOOK_EDGE_KEY ?? '') : '',
   };
 
   const providerMode = (env.PROVIDER_MODE ?? 'live').toLowerCase();

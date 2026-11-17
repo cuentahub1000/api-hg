@@ -85,10 +85,26 @@ scripts/bootstrap-ssm.sh <env>        # app-owned SSM parameters + <env>/HgSecre
 scripts/ssm-status.sh <env>           # what is set, what is PENDING
 cd cdk && npm install                 # root dependencies (esbuild) are installed by synth/deploy:all themselves
 envName=<env> npm run synth
-envName=<env> npm run deploy:all       # resource group -> database -> webhook -> functions, then migrate
+envName=<env> npm run deploy:all       # resource group -> database -> webhook -> functions; deploys only
+envName=<env> npm run migrate          # separate, explicit step: invokes <env>-hg-migrate to apply sql/
 ```
 
-`deploy:all` ends by invoking `<env>-hg-migrate`. The webhook stack prints
+The public webhook on a custom domain is its own stack, `<env>-HgWebhookEdge`,
+deployed only by `envName=<env> npm run deploy:webhook-edge` and never by
+`deploy:all`. It needs `webhook-domain`, `webhook-hosted-zone-id` and
+`webhook-hosted-zone-name` (bootstrap `WEBHOOK_DOMAIN`,
+`WEBHOOK_HOSTED_ZONE_ID`, `WEBHOOK_HOSTED_ZONE_NAME`), fails with a message
+when they are missing, and deploys in us-east-1 only. It creates the ACM
+certificate (DNS-validated in that zone), the CloudFront distribution on that
+domain in front of the webhook Function URL, and the alias record. Order: set the two values, deploy the
+edge, then `deploy:all` so the functions pick the public URL up. The functions
+then give the provider `https://<domain>/api/v1/payments/webhook`
+(`/<env>/api-hg-lambda/webhook-public-url`), the Function URL refuses calls
+that do not come through CloudFront, and Lambda's headers never reach the
+caller.
+
+`deploy:all` never touches the database schema; `npm run migrate` is the only
+thing that does, and you run it yourself. The webhook stack prints
 the public Function URL to register in the provider dashboard together with
 the signing secret. Attach `/<env>/api-hg-lambda/player-invoker-policy-arn`
 to front-self's task role and `operator-invoker-policy-arn` to the

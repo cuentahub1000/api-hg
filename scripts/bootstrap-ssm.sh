@@ -14,7 +14,11 @@
 #   WALLET_INVOKER_POLICY_ARN (optional override; default /<env>/api-wallet-lambda/invoker-policy-arn)
 #   LAMBDA_SG_IDS OTEL_ENDPOINT (optional)
 #   DB_INSTANCE_TYPE (RDS class of the payments database; default t4g.micro)
-#   PROVIDER_API_TOKEN PROVIDER_WEBHOOK_SECRET WALLET_API_KEY WALLET_API_TOKEN DOCUMENT_HASH_KEY   (secret)
+#   WEBHOOK_DOMAIN WEBHOOK_HOSTED_ZONE_ID WEBHOOK_HOSTED_ZONE_NAME
+#       public webhook on CloudFront (deploy:webhook-edge): the custom domain and the
+#       Route 53 zone (in this account) it belongs to; certificate and alias are created by the stack
+#   PROVIDER_API_TOKEN PROVIDER_WEBHOOK_SECRET WALLET_API_KEY WALLET_API_TOKEN   (secret)
+#   DOCUMENT_HASH_KEY WEBHOOK_EDGE_KEY are generated when absent (secret)
 #
 # NOT written here, platform-owned, must exist before any `cdk deploy`:
 #   /<env>/VpcId /<env>/PrivateSubnet1 /<env>/PrivateSubnet2
@@ -50,16 +54,29 @@ put wallet-invoker-policy-arn "${WALLET_INVOKER_POLICY_ARN:-}"
 put lambda-sg-ids             "${LAMBDA_SG_IDS:-}"
 put otel-endpoint             "${OTEL_ENDPOINT:-}"
 put db-instance-type          "${DB_INSTANCE_TYPE:-t4g.micro}"
+put webhook-domain            "${WEBHOOK_DOMAIN:-}"
+put webhook-hosted-zone-id    "${WEBHOOK_HOSTED_ZONE_ID:-}"
+put webhook-hosted-zone-name  "${WEBHOOK_HOSTED_ZONE_NAME:-}"
 
 SECRET_NAME="${ENV_NAME}/HgSecrets"
-SECRET_JSON=$(printf '{"PROVIDER_API_TOKEN":"%s","PROVIDER_WEBHOOK_SECRET":"%s","WALLET_API_KEY":"%s","WALLET_API_TOKEN":"%s","DOCUMENT_HASH_KEY":"%s"}' \
-  "${PROVIDER_API_TOKEN:-}" "${PROVIDER_WEBHOOK_SECRET:-}" "${WALLET_API_KEY:-}" "${WALLET_API_TOKEN:-}" "${DOCUMENT_HASH_KEY:-$(openssl rand -hex 32)}")
+SECRET_JSON=$(printf '{"PROVIDER_API_TOKEN":"%s","PROVIDER_WEBHOOK_SECRET":"%s","WALLET_API_KEY":"%s","WALLET_API_TOKEN":"%s","DOCUMENT_HASH_KEY":"%s","WEBHOOK_EDGE_KEY":"%s"}' \
+  "${PROVIDER_API_TOKEN:-}" "${PROVIDER_WEBHOOK_SECRET:-}" "${WALLET_API_KEY:-}" "${WALLET_API_TOKEN:-}" "${DOCUMENT_HASH_KEY:-$(openssl rand -hex 32)}" "${WEBHOOK_EDGE_KEY:-$(openssl rand -hex 32)}")
 if aws secretsmanager describe-secret --secret-id "$SECRET_NAME" >/dev/null 2>&1; then
   if [[ "$OVERWRITE" == "--overwrite" ]]; then
     aws secretsmanager put-secret-value --secret-id "$SECRET_NAME" --secret-string "$SECRET_JSON" >/dev/null
     echo "write secret ${SECRET_NAME}"
   else
-    echo "keep  secret ${SECRET_NAME}"
+    # Keep every existing value; add only the keys the secret does not have yet.
+    CURRENT=$(aws secretsmanager get-secret-value --secret-id "$SECRET_NAME" --query SecretString --output text)
+    MERGED=$(node -e 'const cur=JSON.parse(process.argv[1]),add=JSON.parse(process.argv[2]);const out={...cur};const added=[];for(const k of Object.keys(add)){if(!(k in cur)){out[k]=add[k];added.push(k)}}process.stdout.write(JSON.stringify({out,added}))' "$CURRENT" "$SECRET_JSON")
+    ADDED=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).added.join(" "))' "$MERGED")
+    if [[ -n "$ADDED" ]]; then
+      node -e 'process.stdout.write(JSON.stringify(JSON.parse(process.argv[1]).out))' "$MERGED" \
+        | aws secretsmanager put-secret-value --secret-id "$SECRET_NAME" --secret-string file:///dev/stdin >/dev/null
+      echo "add   secret ${SECRET_NAME} keys: ${ADDED}"
+    else
+      echo "keep  secret ${SECRET_NAME}"
+    fi
   fi
 else
   aws secretsmanager create-secret --name "$SECRET_NAME" --secret-string "$SECRET_JSON" >/dev/null

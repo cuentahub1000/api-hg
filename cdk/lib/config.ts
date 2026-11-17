@@ -9,7 +9,9 @@
  *       payments-country, payments-currency, payments-return-url, payments-cancel-url,
  *       wallet-mode (lambda|http), wallet-env (optional: env whose wallet to call), wallet-api-url,
  *       wallet-invoker-policy-arn (optional override), lambda-sg-ids, otel-endpoint,
- *       db-instance-type (RDS class of the payments database, default t4g.micro)
+ *       db-instance-type (RDS class of the payments database, default t4g.micro),
+ *       webhook-domain, webhook-hosted-zone-id, webhook-hosted-zone-name
+ *       (public webhook on CloudFront, stack <env>-HgWebhookEdge, deployed by deploy:webhook-edge only)
  *     and, written by the database stack:
  *       db-host, db-port, db-name, db-secret-name, db-sg-id, webhook-function-url
  *
@@ -43,6 +45,10 @@ export interface EnvConfig {
   readonly walletInvokerPolicyArn: string;
   /** True when `provider-webhook-url` is set (an ingress in front of the HTTP runtime); else the webhook Function URL is used. */
   readonly webhookUrlOverridden: boolean;
+  /** Custom domain of the public webhook (CloudFront). Empty = functions use the Function URL as is. */
+  readonly webhookDomain: string;
+  readonly webhookHostedZoneId: string;
+  readonly webhookHostedZoneName: string;
   readonly logRetentionDays: number;
   readonly retainLogGroups: boolean;
 }
@@ -51,6 +57,7 @@ export type FunctionSpec = RouteSpec;
 /** Every route, plus the migration function (no HTTP route, invoked by the deploy script). */
 export const MIGRATE: FunctionSpec = { slug: 'migrate', method: 'POST', resource: '-', audience: 'any', timeoutSec: 120 };
 export const FUNCTIONS: readonly FunctionSpec[] = [...ROUTES, MIGRATE];
+export const WEBHOOK_PATH = ROUTES.find((r) => r.slug === 'webhook')!.resource;
 
 export const SSM_ROOT = (envName: string) => `/${envName}/api-hg-lambda`;
 
@@ -119,6 +126,9 @@ export function loadConfig(scope: Construct, envName: string): EnvConfig {
     walletMode,
     walletInvokerPolicyArn,
     webhookUrlOverridden: isPresent(synth('provider-webhook-url')),
+    webhookDomain: isPresent(synth('webhook-domain')) ? synth('webhook-domain') : '',
+    webhookHostedZoneId: isPresent(synth('webhook-hosted-zone-id')) ? synth('webhook-hosted-zone-id') : '',
+    webhookHostedZoneName: isPresent(synth('webhook-hosted-zone-name')) ? synth('webhook-hosted-zone-name') : '',
     logRetentionDays: 14,
     retainLogGroups: /^(1|true|yes)$/i.test(process.env.RETAIN_LOG_GROUPS ?? ''),
   };

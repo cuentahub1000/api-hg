@@ -8,7 +8,7 @@ import * as nodejs from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import { StringParameter } from 'aws-cdk-lib/aws-ssm';
 import { API_NAME } from '../../lambdas/_routes';
-import { EnvConfig, FunctionSpec, SSM_ROOT, isPresent } from './config';
+import { EnvConfig, FunctionSpec, SSM_ROOT, WEBHOOK_PATH, isPresent } from './config';
 
 export interface FunctionStackProps extends StackProps {
   readonly cfg: EnvConfig;
@@ -32,6 +32,8 @@ export interface FunctionStackProps extends StackProps {
  */
 export class FunctionStack extends Stack {
   readonly fn: lambda.Function;
+  /** Set on the webhook stack only. */
+  functionUrl?: lambda.IFunctionUrl;
 
   constructor(scope: Construct, id: string, props: FunctionStackProps) {
     super(scope, id, props);
@@ -72,8 +74,10 @@ export class FunctionStack extends Stack {
       ...cfg.plainEnv,
     };
     if (!cfg.webhookUrlOverridden && fn.slug !== 'webhook' && fn.slug !== 'migrate') {
-      env.PROVIDER_WEBHOOK_URL = deployParam('webhook-function-url');
+      // With a custom domain the provider is told the CloudFront URL; otherwise the Function URL.
+      env.PROVIDER_WEBHOOK_URL = cfg.webhookDomain ? `https://${cfg.webhookDomain}${WEBHOOK_PATH}` : deployParam('webhook-function-url');
     }
+    if (fn.slug === 'webhook' && cfg.webhookDomain) env.WEBHOOK_EDGE_REQUIRED = '1';
     if (cfg.otelEndpoint !== '') {
       env.OTEL_EXPORTER_OTLP_ENDPOINT = cfg.otelEndpoint;
       env.OTEL_EXPORTER_OTLP_PROTOCOL = 'http/protobuf';
@@ -143,6 +147,7 @@ export class FunctionStack extends Stack {
 
     if (fn.publicUrl) {
       const url = this.fn.addFunctionUrl({ authType: lambda.FunctionUrlAuthType.NONE });
+      this.functionUrl = url;
       new StringParameter(this, 'WebhookUrlParam', {
         parameterName: `${root}/webhook-function-url`,
         stringValue: url.url,

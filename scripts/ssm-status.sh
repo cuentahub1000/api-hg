@@ -113,7 +113,25 @@ row "default:ClientSecurityGroupId" "${ROOT}/lambda-sg-ids"
 row "default:MainOtelEndpoint" "${ROOT}/otel-endpoint" "('none' disables tracing)"
 secret required "${ENV}/HgSecrets" "created by bootstrap-ssm.sh (PROVIDER_API_TOKEN, PROVIDER_WEBHOOK_SECRET, WALLET_API_KEY, WALLET_API_TOKEN)"
 echo
-echo "4. Created by deploy:all (nothing to do before the first deploy)"
+echo "4. Public webhook on a custom domain (CloudFront; deploy:webhook-edge, separate from deploy:all)"
+if WEBHOOK_DOMAIN=$(get "${ROOT}/webhook-domain"); then
+  printf '  %-50s ok       %s\n' "${ROOT}/webhook-domain" "$WEBHOOK_DOMAIN"
+  row required "${ROOT}/webhook-hosted-zone-id"   "Route 53 zone (this account) of ${WEBHOOK_DOMAIN}; the stack creates the certificate and the alias in it"
+  row required "${ROOT}/webhook-hosted-zone-name" "zone name that goes with the id"
+  if aws secretsmanager get-secret-value --region "$REGION" --secret-id "${ENV}/HgSecrets" --query SecretString --output text 2>/dev/null | grep -q '"WEBHOOK_EDGE_KEY":"[^"]'; then
+    printf '  %-50s ok\n' "${ENV}/HgSecrets: WEBHOOK_EDGE_KEY"
+  else
+    printf '  %-50s MISSING  run scripts/bootstrap-ssm.sh %s again (adds the key, keeps the rest)\n' "${ENV}/HgSecrets: WEBHOOK_EDGE_KEY" "$ENV"; BLOCKERS=$((BLOCKERS+1))
+  fi
+  if [[ "$REGION" != "us-east-1" ]]; then
+    printf '  %-50s MISSING  the edge stack deploys in us-east-1 only (CloudFront certificates); current region %s\n' "region" "$REGION"; BLOCKERS=$((BLOCKERS+1))
+  fi
+  row deploy "${ROOT}/webhook-public-url" "the URL to register in the provider dashboard (deploy:webhook-edge)"
+else
+  printf '  %-50s default  not configured: the webhook Function URL is used as is\n' "${ROOT}/webhook-domain"
+fi
+echo
+echo "5. Created by deploy:all (nothing to do before the first deploy)"
 row deploy "${ROOT}/player-invoker-policy-arn"   "then attach it to front-self's task role"
 row deploy "${ROOT}/operator-invoker-policy-arn" "then attach it to the back-office's task role"
 row deploy "${ROOT}/db-host"

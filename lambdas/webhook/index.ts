@@ -10,6 +10,8 @@
  * The signature is computed over the raw bytes, so the body must reach this
  * handler unparsed; the HTTP runtime keeps the raw text for this route.
  */
+import { timingSafeEqual } from 'node:crypto';
+import { getConfig } from '../_common/config';
 import { PaymentsError, AuthError } from '../_common/errors';
 import { log } from '../_common/logger';
 import { GENERIC_MESSAGE } from '../_common/redact';
@@ -37,6 +39,20 @@ export async function handler(event: WebhookEvent = {}): Promise<Envelope<Webhoo
   };
 }
 
+/**
+ * Behind CloudFront (`WEBHOOK_EDGE_REQUIRED=1`) the Function URL must not be
+ * usable directly: the distribution adds `x-webhook-edge-key` and anything
+ * without it is refused before the body is looked at.
+ */
+async function requireEdge(headers: Record<string, string>): Promise<void> {
+  if (process.env.WEBHOOK_EDGE_REQUIRED !== '1') return;
+  const { webhookEdgeKey } = await getConfig();
+  if (!webhookEdgeKey) throw new AuthError('edge key not configured');
+  const got = Buffer.from(headers['x-webhook-edge-key'] ?? '');
+  const want = Buffer.from(webhookEdgeKey);
+  if (got.length !== want.length || !timingSafeEqual(got, want)) throw new AuthError('not via edge');
+}
+
 async function run(event: WebhookEvent): Promise<Envelope<WebhookResult>> {
   try {
     const headers: Record<string, string> = {};
@@ -45,6 +61,7 @@ async function run(event: WebhookEvent): Promise<Envelope<WebhookResult>> {
     if (typeof event.body === 'string') raw = event.isBase64Encoded ? Buffer.from(event.body, 'base64').toString('utf8') : event.body;
     else if (event.body && typeof event.body === 'object') raw = JSON.stringify(event.body);
     else throw new AuthError('empty webhook body');
+    await requireEdge(headers);
     return ok(await receive(raw, headers['x-hg-webhook-signature'] ?? headers['x-webhook-signature']));
   } catch (err) {
     if (err instanceof PaymentsError) {
