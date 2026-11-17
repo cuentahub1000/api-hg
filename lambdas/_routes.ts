@@ -21,6 +21,8 @@ export interface RouteSpec {
   resource: string;
   audience: Audience;
   timeoutSec?: number;
+  /** Lambda memory; default 128 MB. */
+  memoryMb?: number;
   /** Lambda only: expose a public Function URL (the provider calls it). */
   publicUrl?: boolean;
 }

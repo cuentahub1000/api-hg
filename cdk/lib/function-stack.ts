@@ -135,7 +135,7 @@ export class FunctionStack extends Stack {
       projectRoot: repoRoot,
       depsLockFilePath: path.join(repoRoot, 'package-lock.json'),
       timeout: Duration.seconds(fn.timeoutSec ?? 15),
-      memorySize: 256,
+      memorySize: fn.memoryMb ?? 128,
       environment: env,
       logGroup,
       ...(vpc ? { vpc, vpcSubnets, securityGroups } : {}),

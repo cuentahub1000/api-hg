@@ -75,7 +75,7 @@ export function paymentsHandler<T>(slug: string, run: Run<T>): (event: PaymentsE
     } catch (err) {
       if (err instanceof PaymentsError) {
         const level = err.httpErrorStatus >= 500 ? 'error' : 'warn';
-        log[level]('request failed', { type: err.name, err: err.message, caller: ctx.partyId });
+        log[level]('request failed', { type: err.name, err: err.message, detail: err.detail, caller: ctx.partyId });
         return fail(err);
       }
       log.error('unhandled failure', { err: String(err), stack: (err as Error)?.stack });
