@@ -7,7 +7,7 @@
  *   /<env>/api-hg-lambda/<n>   app-owned, written by scripts/bootstrap-ssm.sh:
  *       provider-api-url, provider-account-id, provider-webhook-url (optional override),
  *       payments-country, payments-currency, payments-return-url, payments-cancel-url,
- *       wallet-mode (lambda|http), wallet-function-prefix, wallet-api-url,
+ *       wallet-mode (lambda|http), wallet-env (optional: env whose wallet to call), wallet-api-url,
  *       wallet-invoker-policy-arn (optional override), lambda-sg-ids, otel-endpoint,
  *       db-instance-type (RDS class of the payments database, default t4g.micro)
  *     and, written by the database stack:
@@ -67,7 +67,6 @@ const PLAIN_PARAMS: ReadonlyArray<[envVar: string, ssmName: string]> = [
   ['PAYMENTS_RETURN_URL', 'payments-return-url'],
   ['PAYMENTS_CANCEL_URL', 'payments-cancel-url'],
   ['WALLET_MODE', 'wallet-mode'],
-  ['WALLET_FUNCTION_PREFIX', 'wallet-function-prefix'],
   ['WALLET_API_URL', 'wallet-api-url'],
 ];
 
@@ -89,7 +88,9 @@ export function loadConfig(scope: Construct, envName: string): EnvConfig {
     // function's environment, instead of a CloudFormation failure at deploy.
     if (isPresent(synth(ssmName))) plainEnv[envVar] = deploy(ssmName);
   }
-  if (!plainEnv.WALLET_FUNCTION_PREFIX) plainEnv.WALLET_FUNCTION_PREFIX = `${envName}-wallet-`;
+  // Wallet functions are always `<env>-wallet-<route>`; `wallet-env` only points at another environment's wallet.
+  const walletEnv = isPresent(synth('wallet-env')) ? synth('wallet-env') : envName;
+  plainEnv.WALLET_FUNCTION_PREFIX = `${walletEnv}-wallet-`;
   const walletMode = (isPresent(synth('wallet-mode')) ? synth('wallet-mode') : 'lambda').toLowerCase() === 'http' ? 'http' : 'lambda';
 
   // The wallet publishes its invoker policy ARN; an override slot exists for an

@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# Show which api-hg-lambda SSM slots are filled in for an environment.
+# Deployment readiness for api-hg in one environment.
 #
 # Usage: scripts/ssm-status.sh <env>
 #
-# PENDING means the parameter is missing or still holds the '-' placeholder.
-# A PENDING *override* (provider-webhook-url, wallet-invoker-policy-arn,
-# lambda-sg-ids, otel-endpoint) is fine — the platform parameter or the
-# default behaviour is used instead. A PENDING platform row is not: VpcId and
-# the subnets have no fallback and the deploy fails on them. Rows under
-# "Written by the deploy" are PENDING until the matching stack has run once.
-# ERROR means the lookup itself failed, which is NOT the same as unset.
+# Every row ends with one word that says what to do:
+#   ok        set, nothing to do
+#   MISSING   you must set it before `deploy:all` (bootstrap-ssm.sh or the platform)
+#   NEEDED    deploy works without it, but the feature named will not; set it
+#             before testing that feature (read at runtime, no redeploy)
+#   default   not set, the default in the note is used; nothing to do
+#   deploy    created by the deploy itself; nothing to do
+#   ERROR     the lookup failed (credentials, region), the value is unknown
+# The last lines are the verdict.
 
 set -euo pipefail
 
@@ -21,95 +23,117 @@ fi
 ENV="$1"
 ROOT="/${ENV}/api-hg-lambda"
 REGION="${AWS_REGION:-us-east-1}"
+BLOCKERS=0
+NEEDED=0
+ERRORS=0
 
-show() {
-  local scope="$1" name="$2" note="${3:-}"
+# get <name> -> prints the value; returns 1 when unset/placeholder, 2 on lookup error
+get() {
   local value rc
-
-  # stderr is captured rather than discarded, and a failed lookup is reported
-  # as ERROR rather than PENDING. Collapsing the two is actively misleading:
-  # an expired token would render every row as PENDING, which reads as "you
-  # still have to fill these in" when the truth is "this script could not see
-  # anything at all".
-  value=$(aws ssm get-parameter --region "$REGION" --name "$name" \
+  value=$(aws ssm get-parameter --region "$REGION" --name "$1" \
             --query 'Parameter.Value' --output text 2>&1) && rc=0 || rc=$?
-
   if [[ $rc -ne 0 ]]; then
-    if [[ "$value" == *ParameterNotFound* ]]; then
-      printf '  %-10s %-52s PENDING %s\n' "$scope" "$name" "$note"
-    else
-      printf '  %-10s %-52s ERROR   %s\n' "$scope" "$name" "${value##*: }"
-    fi
-    return
+    if [[ "$value" == *ParameterNotFound* ]]; then return 1; fi
+    printf '%s' "${value##*: }"; return 2
   fi
-
-  if [[ -z "$value" || "$value" == "-" || "$value" == "None" ]]; then
-    printf '  %-10s %-52s PENDING %s\n' "$scope" "$name" "$note"
-  else
-    printf '  %-10s %-52s %s\n' "$scope" "$name" "$value"
-  fi
+  if [[ -z "$value" || "$value" == "-" || "$value" == "None" ]]; then return 1; fi
+  printf '%s' "$value"
 }
 
-# Fail once, clearly, rather than printing a screen of ERROR rows — and never
-# let unusable credentials masquerade as an unbootstrapped environment.
+# row <kind> <name> <note>
+#   kind: required | needed:<feature> | default:<value> | deploy
+row() {
+  local kind="$1" name="$2" note="${3:-}" value rc
+  value=$(get "$name") && rc=0 || rc=$?
+  if [[ $rc -eq 2 ]]; then
+    printf '  %-50s ERROR    %s\n' "$name" "$value"; ERRORS=$((ERRORS+1)); return
+  fi
+  if [[ $rc -eq 0 ]]; then
+    printf '  %-50s ok       %s\n' "$name" "$value"; return
+  fi
+  case "$kind" in
+    required)  printf '  %-50s MISSING  %s\n' "$name" "$note"; BLOCKERS=$((BLOCKERS+1)) ;;
+    needed:*)  printf '  %-50s NEEDED   for %s. %s\n' "$name" "${kind#needed:}" "$note"; NEEDED=$((NEEDED+1)) ;;
+    default:*) printf '  %-50s default  %s %s\n' "$name" "${kind#default:}" "$note" ;;
+    deploy)    printf '  %-50s deploy   %s\n' "$name" "$note" ;;
+  esac
+}
+
+secret() {
+  local kind="$1" name="$2" note="${3:-}"
+  if aws secretsmanager describe-secret --region "$REGION" --secret-id "$name" >/dev/null 2>&1; then
+    printf '  %-50s ok\n' "$name"; return
+  fi
+  case "$kind" in
+    required) printf '  %-50s MISSING  %s\n' "$name" "$note"; BLOCKERS=$((BLOCKERS+1)) ;;
+    deploy)   printf '  %-50s deploy   %s\n' "$name" "$note" ;;
+  esac
+}
+
 if ! caller=$(aws sts get-caller-identity --query Account --output text 2>&1); then
   echo "Cannot read SSM: AWS credentials are not usable." >&2
   echo "${caller}" >&2
-  echo >&2
-  echo "Nothing below would be trustworthy, so nothing is shown." >&2
   exit 1
 fi
 
-echo "api-hg-lambda SSM status for ${ENV} in ${REGION} (account ${caller}):"
+echo "api-hg deployment readiness: ${ENV}, ${REGION}, account ${caller}"
 echo
-echo "Platform-owned (must already exist):"
-show platform "/${ENV}/VpcId"                 "<- required; no override, no fallback"
-show platform "/${ENV}/PrivateSubnet1"        "<- required"
-show platform "/${ENV}/PrivateSubnet2"        "<- required"
-show platform "/${ENV}/ClientSecurityGroupId" "<- attached to every function unless lambda-sg-ids overrides; both absent = one egress SG per function"
-show platform "/${ENV}/MainOtelEndpoint"      "<- unless overridden or disabled below"
+echo "1. Platform (must exist; owned by the platform, not by this repo)"
+row required "/${ENV}/VpcId"          "the functions and the database live in this VPC"
+row required "/${ENV}/PrivateSubnet1" "database subnet 1"
+row required "/${ENV}/PrivateSubnet2" "database subnet 2"
+row "default:one egress SG per function" "/${ENV}/ClientSecurityGroupId"
+row "default:tracing off" "/${ENV}/MainOtelEndpoint"
+secret required "${ENV}/JWTSecret" "the token secret shared with the authorizer"
 echo
-echo "Owned by wallet-lambda (read at deploy when wallet-mode = lambda):"
-show wallet "/${ENV}/api-wallet-lambda/invoker-policy-arn" "<- PENDING = functions cannot invoke the wallet; deploy wallet-lambda first or set the override below"
-echo
-echo "App-owned (bootstrap-ssm.sh):"
-show app "${ROOT}/provider-api-url"          "<- PENDING = provider calls disabled (NOT_CONFIGURED)"
-show app "${ROOT}/provider-account-id"       "<- required for withdrawals (payout source account)"
-show app "${ROOT}/provider-webhook-url"      "<- override only; PENDING = the webhook Function URL below"
-show app "${ROOT}/payments-country"          "<- PENDING = AR"
-show app "${ROOT}/payments-currency"         "<- PENDING = ARS"
-show app "${ROOT}/payments-return-url"       "<- where the hosted checkout sends the player back (front-self)"
-show app "${ROOT}/payments-cancel-url"       "<- same, on cancel"
-show app "${ROOT}/wallet-mode"               "<- lambda|http; PENDING = lambda"
-show app "${ROOT}/wallet-function-prefix"    "<- override only; PENDING = ${ENV}-wallet-"
-show app "${ROOT}/wallet-api-url"            "<- only when wallet-mode = http"
-show app "${ROOT}/wallet-invoker-policy-arn" "<- override only; PENDING = the wallet-lambda row above"
-show app "${ROOT}/lambda-sg-ids"             "<- optional override; PENDING = ClientSecurityGroupId (normal)"
-show app "${ROOT}/otel-endpoint"             "<- override only; 'none' disables tracing"
-show app "${ROOT}/db-instance-type"          "<- RDS class of the payments database; PENDING = t4g.micro"
-echo
-echo "Written by the deploy, not by bootstrap:"
-show deploy "${ROOT}/player-invoker-policy-arn"   "<- resource-group stack; attach to front-self's task role"
-show deploy "${ROOT}/operator-invoker-policy-arn" "<- resource-group stack; attach to the back-office's task role"
-show deploy "${ROOT}/db-host"                     "<- database stack"
-show deploy "${ROOT}/db-port"                     "<- database stack"
-show deploy "${ROOT}/db-name"                     "<- database stack"
-show deploy "${ROOT}/db-secret-name"              "<- database stack"
-show deploy "${ROOT}/db-sg-id"                    "<- database stack; functions get ingress to it"
-show deploy "${ROOT}/webhook-function-url"        "<- webhook stack; register it in the provider dashboard"
-echo
-echo "Secrets (not shown; existence only):"
-# JWTSecret is platform-owned. HgSecrets is created by bootstrap-ssm.sh
-# (PROVIDER_API_TOKEN, PROVIDER_WEBHOOK_SECRET, WALLET_API_KEY, WALLET_API_TOKEN,
-# DOCUMENT_HASH_KEY). HgDatabase/postgres is generated by the database stack.
-for s in "JWTSecret" "HgSecrets" "HgDatabase/postgres"; do
-  if aws secretsmanager describe-secret --region "$REGION" \
-       --secret-id "${ENV}/${s}" >/dev/null 2>&1; then
-    printf '  %-10s %-52s ok\n' secret "${ENV}/${s}"
+echo "2. Wallet (owned by wallet-lambda; deploy wallet-lambda first)"
+WALLET_MODE=$(get "${ROOT}/wallet-mode" 2>/dev/null || echo lambda)
+if [[ "$WALLET_MODE" == "http" ]]; then
+  row required "${ROOT}/wallet-api-url" "wallet-mode is http: the wallet HTTP base URL"
+else
+  if get "${ROOT}/wallet-invoker-policy-arn" >/dev/null 2>&1; then
+    row ok "${ROOT}/wallet-invoker-policy-arn"
   else
-    printf '  %-10s %-52s PENDING\n' secret "${ENV}/${s}"
+    row required "/${ENV}/api-wallet-lambda/invoker-policy-arn" "the functions cannot call the wallet without it (or set ${ROOT}/wallet-invoker-policy-arn)"
   fi
-done
+fi
 echo
-echo "JWTSecret must be the SAME value the authorizer uses; every function"
-echo "verifies the caller's token with it."
+echo "3. Settings (scripts/bootstrap-ssm.sh <env>)"
+row required "${ROOT}/provider-api-url"      "provider base URL"
+row "needed:withdrawals" "${ROOT}/provider-account-id" "payout source account at the provider"
+row "needed:deposits"    "${ROOT}/payments-return-url"  "front-self URL the hosted checkout returns the player to"
+row "needed:deposits"    "${ROOT}/payments-cancel-url"  "same, when the player cancels"
+row "default:AR"  "${ROOT}/payments-country"
+row "default:ARS" "${ROOT}/payments-currency"
+row "default:lambda" "${ROOT}/wallet-mode" "(lambda|http)"
+row "default:${ENV}" "${ROOT}/wallet-env" "(environment whose wallet functions <env>-wallet-* are called)"
+row "default:t4g.micro" "${ROOT}/db-instance-type" "RDS class of the payments database"
+row "default:the webhook Function URL" "${ROOT}/provider-webhook-url"
+row "default:ClientSecurityGroupId" "${ROOT}/lambda-sg-ids"
+row "default:MainOtelEndpoint" "${ROOT}/otel-endpoint" "('none' disables tracing)"
+secret required "${ENV}/HgSecrets" "created by bootstrap-ssm.sh (PROVIDER_API_TOKEN, PROVIDER_WEBHOOK_SECRET, WALLET_API_KEY, WALLET_API_TOKEN)"
+echo
+echo "4. Created by deploy:all (nothing to do before the first deploy)"
+row deploy "${ROOT}/player-invoker-policy-arn"   "then attach it to front-self's task role"
+row deploy "${ROOT}/operator-invoker-policy-arn" "then attach it to the back-office's task role"
+row deploy "${ROOT}/db-host"
+row deploy "${ROOT}/db-port"
+row deploy "${ROOT}/db-name"
+row deploy "${ROOT}/db-secret-name"
+row deploy "${ROOT}/db-sg-id"
+row deploy "${ROOT}/webhook-function-url"        "then register it in the provider dashboard"
+secret deploy "${ENV}/HgDatabase/postgres"       "generated by the database stack"
+echo
+echo "Verdict"
+if [[ $ERRORS -gt 0 ]]; then
+  echo "  ${ERRORS} lookup(s) failed: fix credentials/region and run again."
+  exit 1
+fi
+if [[ $BLOCKERS -gt 0 ]]; then
+  echo "  NOT READY: ${BLOCKERS} MISSING row(s) above must be set before deploy:all."
+  exit 1
+fi
+echo "  READY to deploy: cd cdk && envName=${ENV} npm run deploy:all"
+if [[ $NEEDED -gt 0 ]]; then
+  echo "  After deploy: ${NEEDED} NEEDED row(s) above before testing the named feature (runtime values, no redeploy)."
+fi

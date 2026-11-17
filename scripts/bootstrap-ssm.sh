@@ -10,7 +10,7 @@
 #   PAYMENTS_RETURN_URL PAYMENTS_CANCEL_URL
 #   PROVIDER_WEBHOOK_URL   (optional: only when an ingress fronts the HTTP runtime;
 #                           otherwise the webhook Lambda's Function URL is used)
-#   WALLET_MODE (lambda|http) WALLET_FUNCTION_PREFIX WALLET_API_URL
+#   WALLET_MODE (lambda|http) WALLET_ENV (optional: another environment's wallet) WALLET_API_URL
 #   WALLET_INVOKER_POLICY_ARN (optional override; default /<env>/api-wallet-lambda/invoker-policy-arn)
 #   LAMBDA_SG_IDS OTEL_ENDPOINT (optional)
 #   DB_INSTANCE_TYPE (RDS class of the payments database; default t4g.micro)
@@ -44,7 +44,7 @@ put payments-currency         "${PAYMENTS_CURRENCY:-ARS}"
 put payments-return-url       "${PAYMENTS_RETURN_URL:-}"
 put payments-cancel-url       "${PAYMENTS_CANCEL_URL:-}"
 put wallet-mode               "${WALLET_MODE:-lambda}"
-put wallet-function-prefix    "${WALLET_FUNCTION_PREFIX:-${ENV_NAME}-wallet-}"
+put wallet-env                "${WALLET_ENV:-}"
 put wallet-api-url            "${WALLET_API_URL:-}"
 put wallet-invoker-policy-arn "${WALLET_INVOKER_POLICY_ARN:-}"
 put lambda-sg-ids             "${LAMBDA_SG_IDS:-}"
