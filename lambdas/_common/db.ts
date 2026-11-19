@@ -136,12 +136,17 @@ class Connection implements Queryable {
     return this.connecting;
   }
 
+  /** Which connection a log line is about: name, host and database. */
+  private target(): Record<string, string | undefined> {
+    return { db: this.what, host: process.env[this.spec.host], database: process.env[this.spec.database] };
+  }
+
   async query<T extends QueryResultRow = QueryResultRow>(sql: Sql, params: Params = []): Promise<T[]> {
     const client = await this.handle();
     try {
       return (await client.query<T>(sql, params as unknown[])).rows;
     } catch (err) {
-      log.error('query failed', { sql: sql.replace(/\s+/g, ' ').slice(0, 200), err: String(err) });
+      log.error('query failed', { ...this.target(), sql: sql.replace(/\s+/g, ' ').slice(0, 200), err: String(err) });
       throw err;
     }
   }
@@ -155,7 +160,7 @@ class Connection implements Queryable {
     try {
       return (await client.query(sql, params as unknown[])).rowCount ?? 0;
     } catch (err) {
-      log.error('statement failed', { sql: sql.replace(/\s+/g, ' ').slice(0, 200), err: String(err) });
+      log.error('statement failed', { ...this.target(), sql: sql.replace(/\s+/g, ' ').slice(0, 200), err: String(err) });
       throw err;
     }
   }
