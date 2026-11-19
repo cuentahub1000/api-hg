@@ -4,8 +4,12 @@
  *
  *   db        the payments database — this service's own store (read/write)
  *             DB_HOST DB_PORT DB_NAME, DB_SECRET_ARN (or DB_USER/DB_PASSWORD locally)
- *   security  the api-security database, READ ONLY, for the per-call session and
- *             feature checks (`_common/session.ts`, `_common/permissions.ts`)
+ *   auth      the api-auth database, READ ONLY, for the per-call session check
+ *             (`_common/session.ts`: the `Session` table lives there)
+ *             AUTH_DB_HOST AUTH_DB_PORT AUTH_DB_NAME,
+ *             AUTH_DB_SECRET_ARN (or AUTH_DB_USER/AUTH_DB_PASSWORD locally)
+ *   security  the api-security database, READ ONLY, for the operator feature
+ *             check (`_common/permissions.ts`: User/Role/Feature)
  *             SECURITY_DB_HOST SECURITY_DB_PORT SECURITY_DB_NAME,
  *             SECURITY_DB_SECRET_ARN (or SECURITY_DB_USER/SECURITY_DB_PASSWORD locally)
  *
@@ -40,6 +44,7 @@ type Credentials = { username: string; password: string };
 interface Spec { host: string; port: string; database: string; secret: string; user: string; password: string }
 
 const PAYMENTS: Spec = { host: 'DB_HOST', port: 'DB_PORT', database: 'DB_NAME', secret: 'DB_SECRET_ARN', user: 'DB_USER', password: 'DB_PASSWORD' };
+const AUTH: Spec = { host: 'AUTH_DB_HOST', port: 'AUTH_DB_PORT', database: 'AUTH_DB_NAME', secret: 'AUTH_DB_SECRET_ARN', user: 'AUTH_DB_USER', password: 'AUTH_DB_PASSWORD' };
 const SECURITY: Spec = { host: 'SECURITY_DB_HOST', port: 'SECURITY_DB_PORT', database: 'SECURITY_DB_NAME', secret: 'SECURITY_DB_SECRET_ARN', user: 'SECURITY_DB_USER', password: 'SECURITY_DB_PASSWORD' };
 
 function checkSpec(spec: Spec, what: string): void {
@@ -52,8 +57,8 @@ function checkSpec(spec: Spec, what: string): void {
 
 /** The payments database variables (the HTTP runtime checks them at start). */
 export function checkEnv(): void { checkSpec(PAYMENTS, 'payments'); }
-/** The security database variables; `security.configured()` says whether they are set at all. */
-export function checkSecurityEnv(): void { checkSpec(SECURITY, 'security'); }
+/** The api-auth and api-security database variables (both needed for the per-call checks). */
+export function checkSecurityEnv(): void { checkSpec(AUTH, 'auth'); checkSpec(SECURITY, 'security'); }
 
 const credsCache = new Map<string, Promise<Credentials>>();
 
@@ -178,5 +183,7 @@ class Connection implements Queryable {
 }
 
 export const db = new Connection(PAYMENTS, 'payments');
-/** api-security, read only: sessions and role features. Never written, never joined with payments data. */
+/** api-auth, read only: the `Session` table. Never written, never joined with payments data. */
+export const auth = new Connection(AUTH, 'auth');
+/** api-security, read only: User/Role/Feature. Never written, never joined with payments data. */
 export const security = new Connection(SECURITY, 'security');

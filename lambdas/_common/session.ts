@@ -1,7 +1,7 @@
 /**
  * Per-call session validity, the same rule the auth service applies on every
- * guarded call: the `Session` row the token names must exist, be `active` and
- * not expired. A revoked session is a 401 even though the token still verifies.
+ * guarded call: the `Session` row the token names (in the api-auth database,
+ * read through its read-only endpoint) must exist, be `active` and not expired. A revoked session is a 401 even though the token still verifies.
  *
  * A token with no `sessionId` claim passes this check (nothing to look up); a
  * row missing for a token younger than `FRESH_TOKEN_GRACE_SECONDS` also passes,
@@ -13,7 +13,7 @@
  * burst of calls from one session costs one query.
  */
 import type { SecurityContext } from './auth';
-import { security } from './db';
+import { auth } from './db';
 import { AuthError, PermissionsUnavailableError } from './errors';
 import { log } from './logger';
 
@@ -26,7 +26,7 @@ export type SessionState = 'valid' | 'revoked' | 'expired' | 'missing';
 const cache = new Map<string, { until: number; state: SessionState }>();
 
 export async function sessionState(sessionId: string, userId: string | undefined): Promise<SessionState> {
-  const row = await security.one<{ status: string; expires: string | Date | null }>(
+  const row = await auth.one<{ status: string; expires: string | Date | null }>(
     `SELECT status, expires FROM "Session" WHERE id = $1 AND ($2::text IS NULL OR "userId" = $2::text)`,
     [sessionId, userId ?? null],
   );

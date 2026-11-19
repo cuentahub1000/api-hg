@@ -155,3 +155,8 @@ Not committed, not deployed.
   time, not cached). Without the second one the api-security session check
   could not reach the shared cluster and every call failed closed with
   `PERMISSIONS_UNAVAILABLE`. All function stacks redeploy once.
+
+- Session check now reads the `Session` table where it lives, the api-auth
+  database (`AUTH_DB_*` from `/<env>/ApiAuthDatabaseReadOnly*`, secret
+  `<env>/ApiAuthDatabaseReadOnlySecret`); api-security stays for the operator
+  feature check. New required rows in ssm-status. All function stacks redeploy.

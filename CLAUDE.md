@@ -28,7 +28,7 @@ handler explicitly. Contract: `LAMBDA_API.md`.
 ## Rules that must hold
 
 * **Four checks on every JWT call, in `_common/handler.ts`:** signature, open
-  session (api-security `Session`), audience, and for operator writes the
+  session (api-auth `Session`), audience, and for operator writes the
   role feature `(api-hg, resource, method)` (`_common/permissions.ts`). Never
   add a route that skips them; the only switch-off is the local sandbox
   (`PROVIDER_MODE=mock` + `SANDBOX_SKIP_SECURITY_DB=1`).
@@ -39,8 +39,9 @@ handler explicitly. Contract: `LAMBDA_API.md`.
 * **Account from the request, party from the token.** `accountId` is required
   on deposits and withdrawals and must belong to the token's party
   (`wallet.accountFor`). Never pick an account for the caller.
-* **api-security is read only.** `security` in `_common/db.ts` runs SELECTs on
-  `Session`, `User`, `Role`, `Feature` and their join tables, nothing else.
+* **api-auth and api-security are read only.** `auth` in `_common/db.ts` runs
+  SELECTs on api-auth's `Session`; `security` on api-security's `User`, `Role`,
+  `Feature` and their join tables. Nothing else, never a write.
 
 * **Identity only from the JWT.** Players act on `ctx.partyId`; operators on
   their subtree (`listRows` / `rowFor` in `_domain/payments.ts`). Never read a

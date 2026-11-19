@@ -5,8 +5,10 @@
  *   /<env>/<Name>                    platform-owned (VpcId, PrivateSubnet1/2,
  *                                    ClientSecurityGroupId, DatabaseClientSecurityGroupId,
  *                                    MainOtelEndpoint,
+ *                                    ApiAuthDatabaseReadOnlyHost/Port/Name: the api-auth
+ *                                    DB read for the session check,
  *                                    ApiSecurityDatabaseReadOnlyHost/Port/Name: the
- *                                    api-security DB read for session + feature checks)
+ *                                    api-security DB read for the feature check)
  *   /<env>/api-hg-lambda/<n>   app-owned, written by scripts/bootstrap-ssm.sh:
  *       provider-api-url, provider-account-id, provider-webhook-url (optional override),
  *       payments-country, payments-currency, payments-return-url, payments-cancel-url,
@@ -20,6 +22,7 @@
  *
  * Secrets never pass through SSM. Two Secrets Manager names are constructed:
  *   <env>/JWTSecret          the platform token secret (already exists)
+ *   <env>/ApiAuthDatabaseReadOnlySecret       read-only credential of api-auth (platform-owned)
  *   <env>/ApiSecurityDatabaseReadOnlySecret   read-only credential of api-security (platform-owned)
  *   <env>/HgSecrets    JSON: PROVIDER_API_TOKEN, PROVIDER_WEBHOOK_SECRET, WALLET_API_KEY
  * plus the database credential the database stack generates
@@ -39,7 +42,9 @@ export interface EnvConfig {
   readonly jwtSecretName: string;
   readonly paymentsSecretName: string;
   readonly dbSecretName: string;
-  /** Read-only credential of the api-security database (platform-owned secret name). */
+  /** Read-only credential of the api-auth database (platform-owned secret name): the `Session` table. */
+  readonly authDbSecretName: string;
+  /** Read-only credential of the api-security database (platform-owned secret name): User/Role/Feature. */
   readonly securityDbSecretName: string;
   /** RDS instance class for the payments database, from `db-instance-type` (default t4g.micro). */
   readonly dbInstanceType: string;
@@ -130,6 +135,7 @@ export function loadConfig(scope: Construct, envName: string): EnvConfig {
     jwtSecretName: `${envName}/JWTSecret`,
     paymentsSecretName: `${envName}/HgSecrets`,
     dbSecretName: `${envName}/HgDatabase/postgres`,
+    authDbSecretName: `${envName}/ApiAuthDatabaseReadOnlySecret`,
     securityDbSecretName: `${envName}/ApiSecurityDatabaseReadOnlySecret`,
     dbInstanceType: isPresent(synth('db-instance-type')) ? synth('db-instance-type') : 't4g.micro',
     plainEnv,

@@ -26,7 +26,7 @@ HMAC.
    chain and `partyType` (player / operator) come from the token only; nothing
    in the request names the caller. 401 `AUTH_ERROR` otherwise.
 2. **Session.** The `Session` row the token names (`sessionId` claim) must be
-   `active` and unexpired in api-security. 401 `AUTH_ERROR` when it was ended;
+   `active` and unexpired in api-auth. 401 `AUTH_ERROR` when it was ended;
    500 `PERMISSIONS_UNAVAILABLE` when the check cannot be made (fails closed).
 3. **Audience.** Player routes take player tokens, admin routes operator tokens.
    403 `FORBIDDEN`.

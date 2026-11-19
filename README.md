@@ -80,7 +80,7 @@ token deposits and withdrawals answer 503 `NOT_CONFIGURED`; the front-ends'
 
 ### Security
 
-Every JWT call: signature, open session (api-security), audience, and for
+Every JWT call: signature, open session (api-auth), audience, and for
 operator writes the role feature `(api-hg, resource, method)`; chain scope
 on operator reads and decisions; `accountId` required and owned by the
 caller on deposits and withdrawals; wallet calls carry the caller's JWT, the

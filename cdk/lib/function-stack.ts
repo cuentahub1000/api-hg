@@ -24,7 +24,8 @@ export interface FunctionStackProps extends StackProps {
  * access. The database security group gets an ingress rule from the
  * function's security group.
  *
- * Every JWT function also reads api-security (read-only: `SECURITY_DB_*`) for
+ * Every JWT function also reads api-auth (`AUTH_DB_*`, the `Session` table) and
+ * api-security (`SECURITY_DB_*`, role features), both read-only, for
  * the per-call session and feature checks.
  *
  * `webhook` additionally gets a public Function URL (the provider calls it;
@@ -81,10 +82,15 @@ export class FunctionStack extends Stack {
       env.PROVIDER_WEBHOOK_URL = cfg.webhookDomain ? `https://${cfg.webhookDomain}${WEBHOOK_PATH}` : deployParam('webhook-function-url');
     }
     if (fn.slug === 'webhook' && cfg.webhookDomain) env.WEBHOOK_EDGE_REQUIRED = '1';
-    // Every JWT-authenticated function checks the caller's session and (operator
-    // writes) role features against api-security, read-only, reader endpoint.
+    // Every JWT-authenticated function checks the caller's session against
+    // api-auth and (operator writes) role features against api-security, both
+    // read-only, reader endpoints.
     const checksSecurity = fn.slug !== 'webhook' && fn.slug !== 'migrate';
     if (checksSecurity) {
+      env.AUTH_DB_HOST = StringParameter.valueForStringParameter(this, `/${cfg.envName}/ApiAuthDatabaseReadOnlyHost`);
+      env.AUTH_DB_PORT = StringParameter.valueForStringParameter(this, `/${cfg.envName}/ApiAuthDatabasePort`);
+      env.AUTH_DB_NAME = StringParameter.valueForStringParameter(this, `/${cfg.envName}/ApiAuthDatabaseName`);
+      env.AUTH_DB_SECRET_ARN = cfg.authDbSecretName;
       env.SECURITY_DB_HOST = StringParameter.valueForStringParameter(this, `/${cfg.envName}/ApiSecurityDatabaseReadOnlyHost`);
       env.SECURITY_DB_PORT = StringParameter.valueForStringParameter(this, `/${cfg.envName}/ApiSecurityDatabasePort`);
       env.SECURITY_DB_NAME = StringParameter.valueForStringParameter(this, `/${cfg.envName}/ApiSecurityDatabaseName`);
@@ -116,7 +122,7 @@ export class FunctionStack extends Stack {
     role.addToPolicy(new iam.PolicyStatement({
       sid: 'ReadSecrets',
       actions: ['secretsmanager:GetSecretValue'],
-      resources: [cfg.jwtSecretName, cfg.paymentsSecretName, cfg.dbSecretName, ...(checksSecurity ? [cfg.securityDbSecretName] : [])].map((secretName) =>
+      resources: [cfg.jwtSecretName, cfg.paymentsSecretName, cfg.dbSecretName, ...(checksSecurity ? [cfg.authDbSecretName, cfg.securityDbSecretName] : [])].map((secretName) =>
         this.formatArn({ service: 'secretsmanager', resource: 'secret', resourceName: `${secretName}*`, arnFormat: ArnFormat.COLON_RESOURCE_NAME })),
     }));
     if (vpc) role.addManagedPolicy(iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaVPCAccessExecutionRole'));
