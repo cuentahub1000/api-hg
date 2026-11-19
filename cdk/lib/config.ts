@@ -3,7 +3,8 @@
  * engagement functions:
  *
  *   /<env>/<Name>                    platform-owned (VpcId, PrivateSubnet1/2,
- *                                    ClientSecurityGroupId, MainOtelEndpoint,
+ *                                    ClientSecurityGroupId, DatabaseClientSecurityGroupId,
+ *                                    MainOtelEndpoint,
  *                                    ApiSecurityDatabaseReadOnlyHost/Port/Name: the
  *                                    api-security DB read for session + feature checks)
  *   /<env>/api-hg-lambda/<n>   app-owned, written by scripts/bootstrap-ssm.sh:
@@ -91,7 +92,10 @@ export function loadConfig(scope: Construct, envName: string): EnvConfig {
   const deploy = (name: string) => StringParameter.valueForStringParameter(scope, `${root}/${name}`);
 
   const sgIds = synth('lambda-sg-ids');
-  const platformSg = platformSynth('ClientSecurityGroupId');
+  // Deploy-time reads (never cached in cdk.context.json): the functions must sit
+  // in both platform client groups, the general one and the one the shared
+  // database cluster (api-security) admits on 5432.
+  const platformDeploy = (name: string) => StringParameter.valueForStringParameter(scope, `${platformRoot}/${name}`);
   const otelOverride = synth('otel-endpoint');
 
   const plainEnv: Record<string, string> = {};
@@ -119,7 +123,7 @@ export function loadConfig(scope: Construct, envName: string): EnvConfig {
     envName,
     vpcId: platformSynth('VpcId'),
     privateSubnetIds: [platformSynth('PrivateSubnet1'), platformSynth('PrivateSubnet2')].filter(isPresent),
-    lambdaSgIds: isPresent(sgIds) ? splitList(sgIds).slice(0, 2) : isPresent(platformSg) ? [platformSg] : [],
+    lambdaSgIds: isPresent(sgIds) ? splitList(sgIds).slice(0, 2) : [platformDeploy('ClientSecurityGroupId'), platformDeploy('DatabaseClientSecurityGroupId')],
     otelEndpoint: isPresent(otelOverride) && otelOverride !== 'none'
       ? otelOverride
       : isPresent(platformSynth('MainOtelEndpoint')) ? StringParameter.valueForStringParameter(scope, `${platformRoot}/MainOtelEndpoint`) : '',

@@ -21,7 +21,9 @@
 
 Platform-owned, must exist before deploying: `/<env>/VpcId`,
 `/<env>/PrivateSubnet1`, `/<env>/PrivateSubnet2`, optional
-`/<env>/ClientSecurityGroupId`, `/<env>/MainOtelEndpoint`, secret
+`/<env>/ClientSecurityGroupId`, `/<env>/DatabaseClientSecurityGroupId` (the
+shared database cluster admits it on 5432; the api-security reads need it),
+`/<env>/MainOtelEndpoint`, secret
 `<env>/JWTSecret`.
 
 External: hg.cash API (`PROVIDER_API_URL`, production `https://hg.cash/api/v1`),

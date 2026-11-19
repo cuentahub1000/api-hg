@@ -149,3 +149,9 @@ Not committed, not deployed.
   `_common/http.ts`). `admin-payments-get` returns them as `logs`.
   `LAMBDA_API.md` documents `logs` and the return/cancel URL behaviour for the
   player UI.
+
+- Functions now carry both platform client groups by default
+  (`ClientSecurityGroupId` + `DatabaseClientSecurityGroupId`, read at deploy
+  time, not cached). Without the second one the api-security session check
+  could not reach the shared cluster and every call failed closed with
+  `PERMISSIONS_UNAVAILABLE`. All function stacks redeploy once.
