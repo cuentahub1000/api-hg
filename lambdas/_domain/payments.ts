@@ -7,7 +7,9 @@
  * Deposit:    pending -> (paid) -> awaiting_approval -> completed | rejected
  *                     -> under_review | expired | cancelled | failed
  *             wallet: CREDIT/deposit PENDING at creation; COMPLETE credits; CANCEL drops it.
- * Withdrawal: awaiting_approval | processing -> completed | rejected | failed | cancelled
+ * Withdrawal: awaiting_approval -> queued -> processing -> completed | rejected | failed | cancelled
+ *             (no hold: created directly as queued). `queue.ts` pays the queue
+ *             from the provider account's balance, every minute.
  *             wallet: DEBIT/withdrawal PENDING blocks at creation; COMPLETE finalises;
  *             CANCEL (reject/fail/cancel) releases the blocked amount.
  *
@@ -19,7 +21,7 @@
 import { randomUUID } from 'node:crypto';
 import { db, type Queryable } from '../_common/db';
 import { getConfig } from '../_common/config';
-import { ConflictError, InvalidStateError, NotConfiguredError, NotFoundError, RequestInProgressError, UpstreamError, ProviderFundsError } from '../_common/errors';
+import { ConflictError, InvalidStateError, NotConfiguredError, NotFoundError, RequestInProgressError, UpstreamError } from '../_common/errors';
 import { documentHash } from '../_common/hash';
 import { log } from '../_common/logger';
 import { rootOf } from '../_common/chain';
@@ -170,6 +172,7 @@ interface Patch {
   note?: string | null;
   decided_by?: string | null;
   error_code?: string | null;
+  priority?: number;
   completed?: boolean;
 }
 
@@ -247,7 +250,7 @@ export async function createDeposit(ctx: SecurityContext, input: CreateDepositIn
     const q = `payment=${encodeURIComponent(id)}`;
     const co = await prov.createCheckout({
       paymentId: id, amount: input.amount, payer: input.payer, locale: input.locale, country: cfg.provider.country,
-      successUrl: `${cfg.returnUrl}?${q}`, cancelUrl: `${cfg.cancelUrl}?${q}&cancelled=1`,
+      successUrl: `${cfg.returnUrl}?${q}`, cancelUrl: `${cfg.cancelUrl}?${q}&cancelled=1`, accountId: s.depositAccountId,
     });
     await setProvider(id, prov.name, { ref: co.id, status: co.status, checkoutUrl: co.checkoutUrl, expiresAt: co.expiresAt, data: co.raw });
     await addEvent(db, id, 'system', 'checkout_opened', { ref: co.id });
@@ -314,7 +317,7 @@ export async function createWithdrawal(ctx: SecurityContext, input: CreateWithdr
     await addEvent(db, id, 'system', 'held');
     return playerView(row);
   }
-  return playerView(await submitPayout(row, 'system'));
+  return playerView(await enqueue(row, 'system'));
 }
 
 /** Player cancels a withdrawal that has not been approved yet. */
@@ -330,18 +333,29 @@ export async function approve(ctx: SecurityContext, id: string, note: string | u
   assertStatus(row, ['awaiting_approval']);
   const actor = `operator:${ctx.partyId}`;
   if (row.kind === 'deposit') return adminView(await completeDeposit(row, actor, note ?? null));
-  // withdrawal: mark the decision first (lock), then submit the bank transfer
-  const decided = await patch(row.id, { note: note ?? null, decided_by: ctx.partyId }, row.version);
-  await addEvent(db, id, actor, 'approved', note ? { note } : undefined);
-  const after = await submitPayout(decided, actor);
-  // Back to approval = the payout account could not cover it: tell the operator.
-  if (after.status === 'awaiting_approval') throw new ProviderFundsError();
-  return adminView(after);
+  // withdrawal: mark the decision (lock), then into the queue; the queue run
+  // sends the bank transfer once the provider account covers it.
+  const { name } = operatorActor(ctx);
+  const decided = await patch(row.id, { note: note ?? null, decided_by: ctx.partyId, decided_by_name: name }, row.version);
+  await addEvent(db, id, actor, 'approved', note ? { note } : undefined, name);
+  return adminView(await enqueue(decided, actor, name));
+}
+
+/** Operator moves a queued withdrawal: lower `priority` is paid first; steps of 1000 leave room between two. */
+export async function setPriority(ctx: SecurityContext, id: string, priority: number): Promise<PaymentAdminView> {
+  const row = await rowFor(id, { fullChain: ctx.fullChain });
+  if (row.kind !== 'withdrawal') throw new InvalidStateError('Only withdrawals have a queue position');
+  assertStatus(row, ['queued']);
+  const { actor, name } = operatorActor(ctx);
+  const updated = await patch(row.id, { priority }, row.version);
+  await addEvent(db, row.id, actor, 'reprioritized', { from: row.priority === null ? null : Number(row.priority), to: priority }, name);
+  return adminView(updated);
 }
 
 export async function reject(ctx: SecurityContext, id: string, note: string): Promise<PaymentAdminView> {
   const row = await rowFor(id, { fullChain: ctx.fullChain });
-  assertStatus(row, ['awaiting_approval']);
+  // a queued withdrawal has not reached the provider: it can still be refused
+  assertStatus(row, row.kind === 'withdrawal' ? ['awaiting_approval', 'queued'] : ['awaiting_approval']);
   const { actor, name } = operatorActor(ctx);
   return adminView(await release(row, 'rejected', actor, note, ctx.partyId, undefined, name));
 }
@@ -433,7 +447,26 @@ async function release(row: PaymentRow, status: 'rejected' | 'cancelled' | 'fail
 }
 
 /**
- * Approved (or never held) withdrawal: ask the provider for the bank transfer.
+ * Withdrawal into the queue. Its place is the end of the tenant's queue (max
+ * priority + 1000) unless it already had one (a request the provider could
+ * not cover keeps its turn).
+ */
+async function enqueue(row: PaymentRow, actor: string, actorName?: string, errorCode: string | null = null): Promise<PaymentRow> {
+  const n = await db.execute(
+    `UPDATE payment SET status = 'queued', error_code = $3, updated_at = now(), version = version + 1,
+       priority = coalesce(priority, (SELECT coalesce(max(priority), 0) + 1000 FROM payment WHERE tenant = $2 AND kind = 'withdrawal' AND status = 'queued'))
+     WHERE id = $1 AND version = $4`,
+    [row.id, row.tenant, errorCode, row.version],
+  );
+  if (n === 0) throw new ConflictError('The payment was changed by someone else');
+  const updated = (await rowById(row.id))!;
+  await addEvent(db, row.id, actor, 'queued', { priority: Number(updated.priority) }, actorName);
+  return updated;
+}
+
+/**
+ * Queued withdrawal, its turn come (`queue.ts`), or a `processing` one without
+ * an answer: ask the provider for the bank transfer.
  *
  * The row goes to `processing` *before* the provider is called, so a
  * `processing` withdrawal without a provider reference always means "transfer
@@ -444,7 +477,7 @@ async function release(row: PaymentRow, status: 'rejected' | 'cancelled' | 'fail
  * as a duplicate (the first one exists; its reference arrives by webhook or an
  * operator attaches it with `admin-payments-resolve`).
  */
-async function submitPayout(row: PaymentRow, actor: string, actorName?: string): Promise<PaymentRow> {
+export async function submitPayout(row: PaymentRow, actor: string, actorName?: string): Promise<PaymentRow> {
   if (!row.destination) throw new InvalidStateError('withdrawal has no destination');
   const prov = await provider();
   let current = row;
@@ -462,12 +495,11 @@ async function submitPayout(row: PaymentRow, actor: string, actorName?: string):
     const outcome = prov.payoutFailure(err);
     if (outcome === 'insufficient') {
       // The provider account cannot cover it right now. Not the player's
-      // failure: the request goes back to approval, money still blocked, so an
-      // operator approves it again once the account is funded.
+      // failure: back into the queue at its own place, money still blocked;
+      // the next queue run with enough balance sends it.
       log.warn('payout needs funds at the provider', { id: row.id, err: String(err) });
-      const held = await patch(row.id, { status: 'awaiting_approval', hold: true, error_code: 'PROVIDER_FUNDS' });
       await addEvent(db, row.id, 'system', 'provider_funds_short');
-      return held;
+      return enqueue(current, 'system', undefined, 'PROVIDER_FUNDS');
     }
     if (outcome === 'refused') {
       // The provider holds nothing: give the money back and surface the failure.

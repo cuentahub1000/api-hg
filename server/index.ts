@@ -33,6 +33,10 @@ import { handler as adminPlayerLimitsUpdate } from '../lambdas/admin-player-limi
 import { handler as adminPlayerBlock } from '../lambdas/admin-player-block';
 import { handler as adminPlayerUnblock } from '../lambdas/admin-player-unblock';
 import { handler as adminPaymentsResolve } from '../lambdas/admin-payments-resolve';
+import { handler as adminQueueList } from '../lambdas/admin-queue-list';
+import { handler as adminQueueRun } from '../lambdas/admin-queue-run';
+import { handler as adminPaymentsPrioritize } from '../lambdas/admin-payments-prioritize';
+import { runQueue } from '../lambdas/_domain/queue';
 import { handler as webhook } from '../lambdas/webhook';
 
 const HANDLERS: Record<string, Handler> = {
@@ -54,6 +58,9 @@ const HANDLERS: Record<string, Handler> = {
   'admin-player-block': adminPlayerBlock as Handler,
   'admin-player-unblock': adminPlayerUnblock as Handler,
   'admin-payments-resolve': adminPaymentsResolve as Handler,
+  'admin-queue-list': adminQueueList as Handler,
+  'admin-queue-run': adminQueueRun as Handler,
+  'admin-payments-prioritize': adminPaymentsPrioritize as Handler,
   webhook: webhook as unknown as Handler,
 };
 
@@ -153,8 +160,16 @@ async function main(): Promise<void> {
     });
   });
   server.listen(PORT, () => log.info('listening', { port: PORT, prefix: PREFIX || '/' }));
+  // What EventBridge does for the Lambda deployment: pay the withdrawal queues every minute.
+  let running = false;
+  const timer = setInterval(() => {
+    if (running) return;
+    running = true;
+    runQueue().catch((err) => log.error('queue run crashed', { err: String(err) })).finally(() => { running = false; });
+  }, 60_000);
   const drain = () => {
     log.info('draining');
+    clearInterval(timer);
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 10_000).unref();
   };

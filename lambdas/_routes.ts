@@ -48,6 +48,11 @@ export const ROUTES: readonly RouteSpec[] = [
   { slug: 'admin-reconcile',        method: 'POST', resource: '/api/v1/payments/admin/reconcile',             audience: 'operator', timeoutSec: 60 },
   { slug: 'admin-payments-resolve', method: 'POST', resource: '/api/v1/payments/admin/payments/{id}/resolve', audience: 'operator', timeoutSec: 30 },
 
+  // --- operator: withdrawal queue ---------------------------------------
+  { slug: 'admin-queue-list',          method: 'GET',  resource: '/api/v1/payments/admin/withdrawals/queue',          audience: 'operator', timeoutSec: 20 },
+  { slug: 'admin-queue-run',           method: 'POST', resource: '/api/v1/payments/admin/withdrawals/queue/run',      audience: 'operator', timeoutSec: 60 },
+  { slug: 'admin-payments-prioritize', method: 'PUT',  resource: '/api/v1/payments/admin/payments/{id}/priority',     audience: 'operator' },
+
   // --- operator: per-player limits and blocks ---------------------------
   { slug: 'admin-player-get',           method: 'GET',  resource: '/api/v1/payments/admin/players/{partyId}',         audience: 'operator' },
   { slug: 'admin-player-limits-update', method: 'PUT',  resource: '/api/v1/payments/admin/players/{partyId}/limits',  audience: 'operator' },

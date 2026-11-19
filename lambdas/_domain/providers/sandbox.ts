@@ -68,6 +68,12 @@ export async function sandboxCreatePayout(input: { amount: number; destination: 
   return toPayout(row!);
 }
 
+/** The sandbox account's balance: `SANDBOX_PROVIDER_BALANCE` (default 1 000 000 000, i.e. never short). */
+export async function sandboxGetBalance(): Promise<number> {
+  const n = Number(process.env.SANDBOX_PROVIDER_BALANCE ?? '');
+  return Number.isFinite(n) && process.env.SANDBOX_PROVIDER_BALANCE ? n : 1_000_000_000;
+}
+
 /** A payout completes on its own `SANDBOX_PAYOUT_SECONDS` (default 15) after submission. */
 export async function sandboxGetPayout(id: string): Promise<Payout | null> {
   const seconds = Number(process.env.SANDBOX_PAYOUT_SECONDS ?? '15') || 15;

@@ -41,7 +41,7 @@ lambdas/
     wallet.ts       the wallet client (lambda invoke or http, x-api-key)
     provider.ts     the hg.cash client (checkouts, payouts, webhook signature)
     webhook.ts      webhook intake: HMAC, inbox, dispatch
-  <slug>/index.ts   one file per function; migrate/ applies sql/
+  <slug>/index.ts   one file per function; migrate/ applies sql/; queue-run/ pays the withdrawal queue (scheduled, no route)
 server/             HTTP runtime (Kubernetes / local shim)
 sql/                migrations, applied in name order once
 cdk/                one stack per function + resource group (invoker policies) + database

@@ -176,3 +176,16 @@ Not committed, not deployed.
   transfers are paid from, per tenant. A payout refused for insufficient funds
   at the provider puts the withdrawal back to `awaiting_approval` (money still
   blocked) instead of failing it.
+
+- Withdrawal queue (sql/010). Approved or never-held withdrawals are `queued`
+  (player sees `processing`), never sent on approve. `queue-run` (new function,
+  EventBridge every minute; HTTP runtime timer) pays each tenant's queue from
+  the provider account balance (`GET /account/{id}/balance`, `netBalance`) in
+  `priority` order (steps of 1000) per `withdrawalQueueMode`:
+  `fifo_stop_on_fail` | `fit`. Provider funds refusal returns the row to
+  `queued` at its place (`PROVIDER_FUNDS`), replacing the back-to-approval rule
+  and the 422 on approve. New operator routes `admin-queue-list`,
+  `admin-queue-run`, `admin-payments-prioritize`; reject accepts `queued`.
+  Settings: `depositAccountId` (sent to the provider only when set) and
+  `withdrawalQueueMode`. Deploy: `deploy:all` (new stacks + routes), `migrate`,
+  Feature rows for the three new operator routes.

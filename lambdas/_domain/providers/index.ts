@@ -36,7 +36,7 @@ export interface Payout {
   raw?: unknown;
 }
 
-export interface CreateCheckoutInput { paymentId: string; amount: number; payer?: Payer; locale?: string; country: string; successUrl: string; cancelUrl: string }
+export interface CreateCheckoutInput { paymentId: string; amount: number; payer?: Payer; locale?: string; country: string; successUrl: string; cancelUrl: string; /** provider account to open the checkout on; null = let the provider pick */ accountId?: string | null }
 export interface CreatePayoutInput { paymentId: string; amount: number; destination: Destination; concept?: string; /** provider account to pay from; default = the deployment's */ accountId?: string | null }
 
 export interface PaymentProvider {
@@ -47,6 +47,8 @@ export interface PaymentProvider {
   cancelCheckout(ref: string, paymentId?: string): Promise<void>;
   createPayout(input: CreatePayoutInput): Promise<Payout>;
   getPayout(ref: string, paymentId?: string): Promise<Payout | null>;
+  /** Balance usable for payouts on a provider account (null = the deployment's). */
+  getBalance(accountId: string | null): Promise<number>;
   /** Our status for one of the provider's checkout statuses; null = no change. */
   mapCheckoutStatus(status: string): 'paid' | 'under_review' | 'rejected' | 'expired' | 'cancelled' | 'pending' | null;
   /** Our outcome for one of the provider's payout statuses; null = still on its way. */

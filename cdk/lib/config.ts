@@ -64,10 +64,13 @@ export interface EnvConfig {
   readonly retainLogGroups: boolean;
 }
 
-export type FunctionSpec = RouteSpec;
+/** A route, or a function without one: `schedule` is an EventBridge expression that invokes it. */
+export type FunctionSpec = RouteSpec & { readonly schedule?: string };
 /** Every route, plus the migration function (no HTTP route, invoked by the deploy script). */
 export const MIGRATE: FunctionSpec = { slug: 'migrate', method: 'POST', resource: '-', audience: 'any', timeoutSec: 120 };
-export const FUNCTIONS: readonly FunctionSpec[] = [...ROUTES, MIGRATE];
+/** The withdrawal queue run: no route, invoked every minute. */
+export const QUEUE_RUN: FunctionSpec = { slug: 'queue-run', method: 'POST', resource: '-', audience: 'any', timeoutSec: 300, schedule: 'rate(1 minute)' };
+export const FUNCTIONS: readonly FunctionSpec[] = [...ROUTES, MIGRATE, QUEUE_RUN];
 export const WEBHOOK_PATH = ROUTES.find((r) => r.slug === 'webhook')!.resource;
 
 export const SSM_ROOT = (envName: string) => `/${envName}/api-hg-lambda`;

@@ -52,7 +52,7 @@ const row: PaymentRow = {
   id: '3f0c0a2e-0000-4000-8000-000000000001', kind: 'withdrawal', status: 'rejected', tenant: 'root1', party_id: 'p1', username: 'ana',
   chain: 'root1-a1', account_id: '42', currency: 'ARS', amount: '1500.50', fee: null, hold: true, provider: 'hg', wallet_operation_id: 'op1', wallet_status: 'CANCELED',
   destination: { type: 'cvu', value: '0000003100012345678901', holderName: 'Ana' }, payer: null, document_hash: null, client: null, note: 'Above limit', decided_by: 'agent1', decided_by_name: 'Agent One', decided_at: null,
-  error_code: null, created_at: '2026-11-16T10:00:00.000Z', updated_at: '2026-11-16T10:01:00.000Z', completed_at: null, version: 3,
+  error_code: null, priority: null, created_at: '2026-11-16T10:00:00.000Z', updated_at: '2026-11-16T10:01:00.000Z', completed_at: null, version: 3,
   p_ref: null, p_status: null, p_checkout_url: null, p_expires_at: null, p_data: null,
 };
 

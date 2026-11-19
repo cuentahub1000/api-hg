@@ -16,7 +16,7 @@ import { NotConfiguredError, UpstreamError } from '../../_common/errors';
 import { upstream } from '../../_common/http';
 import { recordRequest } from '../provider-log';
 import type { Checkout, CreateCheckoutInput, CreatePayoutInput, PaymentProvider, Payout } from './index';
-import { sandboxCancelCheckout, sandboxCreateCheckout, sandboxCreatePayout, sandboxGetCheckout, sandboxGetPayout } from './sandbox';
+import { sandboxCancelCheckout, sandboxCreateCheckout, sandboxCreatePayout, sandboxGetBalance, sandboxGetCheckout, sandboxGetPayout } from './sandbox';
 
 async function cfg(): Promise<ProviderConfig> {
   const p = (await getConfig()).provider;
@@ -51,8 +51,9 @@ export const hgProvider: PaymentProvider = {
       expiresInSeconds: 86400,
       locale: input.locale === 'en' ? 'en' : 'es',
     };
-    // No accountId here: the provider ties the account to a country and rejects
-    // checkouts for others; the account is only needed for payouts.
+    // The provider ties an account to a country and rejects checkouts for others,
+    // so the account is sent only when the tenant chose one (depositAccountId).
+    if (input.accountId) body.accountId = input.accountId;
     if (p.webhookUrl) body.webhookUrl = p.webhookUrl;
     if (input.payer && (input.payer.document || input.payer.name || input.payer.email)) {
       body.payer = { document: input.payer.document, name: input.payer.name, email: input.payer.email };
@@ -93,6 +94,17 @@ export const hgProvider: PaymentProvider = {
     if ((await cfg()).mode === 'mock') return sandboxGetPayout(ref);
     const { status, data } = await call<Record<string, unknown>>('GET', `/transaction/${encodeURIComponent(ref)}/status`, undefined, [404], paymentId);
     return status === 404 ? null : toPayout(data);
+  },
+
+  async getBalance(accountId) {
+    const p = await cfg();
+    if (p.mode === 'mock') return sandboxGetBalance();
+    const id = accountId ?? p.accountId;
+    const { data } = await call<Record<string, unknown>>('GET', `/account/${encodeURIComponent(id)}/balance`);
+    // netBalance = balance minus pending fees: what a transfer request is checked against.
+    const n = Number(data.netBalance ?? data.balance);
+    if (!Number.isFinite(n)) throw new UpstreamError('payment provider', 502);
+    return n;
   },
 
   mapCheckoutStatus(status) {

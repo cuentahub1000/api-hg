@@ -55,9 +55,7 @@ HMAC.
 `LIMIT_EXCEEDED` (422, generic: the player is never told which limit),
 `REQUEST_IN_PROGRESS` (422, `detail` names the blocking withdrawal), `BLOCKED`
 (403, an operator blocked this kind for the player; tell them to contact
-support), `INSUFFICIENT_FUNDS` (422), `PROVIDER_FUNDS` (422, operator
-approve only: the payout account cannot cover the transfer, the withdrawal
-stays `awaiting_approval`), `UPSTREAM_ERROR` (502),
+support), `INSUFFICIENT_FUNDS` (422), `UPSTREAM_ERROR` (502),
 `NOT_CONFIGURED` (503), `PAYMENTS_ERROR` (500). A 5xx message is always the
 generic "There was an error processing the request".
 
@@ -79,6 +77,9 @@ generic "There was an error processing the request".
 | `admin-payments-cancel` | `/api/v1/payments/admin/payments/{id}/cancel` | POST | operator |
 | `admin-reconcile` | `/api/v1/payments/admin/reconcile` | POST | operator |
 | `admin-payments-resolve` | `/api/v1/payments/admin/payments/{id}/resolve` | POST | operator |
+| `admin-queue-list` | `/api/v1/payments/admin/withdrawals/queue` | GET | operator |
+| `admin-queue-run` | `/api/v1/payments/admin/withdrawals/queue/run` | POST | operator |
+| `admin-payments-prioritize` | `/api/v1/payments/admin/payments/{id}/priority` | PUT | operator |
 | `admin-player-get` | `/api/v1/payments/admin/players/{partyId}` | GET | operator |
 | `admin-player-limits-update` | `/api/v1/payments/admin/players/{partyId}/limits` | PUT | operator |
 | `admin-player-block` | `/api/v1/payments/admin/players/{partyId}/blocks` | POST | operator |
@@ -120,7 +121,9 @@ national id is **not** stored), `documentHash` (keyed HMAC-SHA256 of the
 national id the player gave, for comparing later entries without holding the
 number), `client` (`{ ip, userAgent }` of the request, from the
 `x-player-ip` / `x-player-user-agent` headers the front-end forwards),
-`decidedBy`, `decidedAt`, `errorCode`.
+`decidedBy`, `decidedByName`, `decidedAt`, `errorCode`, `priority` (withdrawals: place in
+the queue, lower first; null outside it). An operator sees the status
+`queued`; a player sees that same withdrawal as `processing`.
 
 ### Deposit lifecycle
 
@@ -143,10 +146,11 @@ expired or cancelled deposit leaves no trace in the wallet. With `holdDeposits` 
 ### Withdrawal lifecycle
 
 ```
-awaiting_approval ──approve──▶ processing ──(bank transfer done)──▶ completed
-   │  ▲  ▲                          ├──(provider error)──▶ failed  (money released)
-   │  │  └──(provider account short of funds: back here, money still blocked)
-   │  └──(hold off: created directly as processing)
+awaiting_approval ──approve──▶ queued ──(queue run, account covers it)──▶ processing ──(transfer done)──▶ completed
+   │                             │  ▲                                        ├──(provider error)──▶ failed  (money released)
+   │                             │  └──(provider still short of funds: back in the queue, same place)
+   │  ┌──(hold off: created directly as queued)
+   │  │                          └──reject──▶ rejected  (money released)
    ├──reject──▶ rejected   (money released)
    └──cancel──▶ cancelled  (player, only while awaiting_approval; money released)
 ```
@@ -155,6 +159,29 @@ The amount is **blocked in the wallet the moment the request is accepted**
 (a pending withdrawal operation), so it cannot be bet or withdrawn twice.
 `completed` finalises the wallet operation; `rejected`, `failed` and
 `cancelled` cancel it and the blocked amount returns to the balance.
+
+#### The withdrawal queue
+
+Nothing is sent to the provider when a withdrawal is approved (or created
+without a hold): it joins the tenant's queue as `queued`, with `priority` =
+the current highest + 1000. **Every minute** a run reads the provider
+account's balance (`withdrawalAccountId`, or the deployment's account) and
+pays the queue in `priority` order (ties by creation time), following the
+tenant's `withdrawalQueueMode`:
+
+* `fifo_stop_on_fail` (default): send each one in order; stop at the first
+  the balance does not cover. Nothing behind it is paid before it.
+* `fit`: walk the whole queue; send every one the balance covers, skip the
+  rest (like a bank clearing cheques).
+
+Each transfer sent lowers the balance the run works with. When the provider
+itself refuses one for funds (fees, a transfer made elsewhere), the withdrawal
+goes back to `queued` at its own place with `errorCode: PROVIDER_FUNDS` and
+the event `provider_funds_short`; it counts as "does not fit". An operator
+can move a queued withdrawal (`admin-payments-prioritize`, any integer; the
+gaps of 1000 are there to slot one between two others), run the queue now
+(`admin-queue-run`), or reject it (`admin-payments-reject`, money released).
+The player sees a queued withdrawal as `processing`.
 
 #### Every failure has a way out
 
@@ -166,13 +193,14 @@ database fix.
   the action returns `UPSTREAM_ERROR` and can be repeated. Wallet operations
   are created and moved with the payment id as their reference, so a repeat
   finds the existing operation instead of creating or moving a second one.
-* **Provider refuses the transfer** (approve): `failed`, blocked amount
+* **Provider refuses the transfer** (queue run): `failed`, blocked amount
   released, reason in the payment's `logs`. One refusal is different: when the
-  **provider account is short of funds**, the withdrawal goes back to
-  `awaiting_approval` with the money still blocked (event
-  `provider_funds_short`, `errorCode: PROVIDER_FUNDS`), to be approved again
-  once the account is funded. `withdrawalAccountId` in the settings picks the
-  provider account per tenant.
+  **provider account is short of funds**, the withdrawal goes back to `queued`
+  at its place with the money still blocked (event `provider_funds_short`,
+  `errorCode: PROVIDER_FUNDS`); the next run with enough balance sends it.
+  `withdrawalAccountId` in the settings picks the provider account per tenant.
+* **Provider balance cannot be read** (queue run): nothing is sent that
+  minute; the queue is untouched and the next run tries again.
 * **Provider does not answer, or the answer is lost** (timeout, 5xx, crash
   after it accepted): the withdrawal stays `processing` **without a provider
   reference** and the money stays blocked; the event trail shows
@@ -246,8 +274,9 @@ expires or is cancelled.
 ```
 
 `type` is `cbu` or `cvu`; `value` is 22 digits; `document` (optional national
-id) is hashed, never stored. Returns the `Payment` (`awaiting_approval` or
-`processing`). 422 `INSUFFICIENT_FUNDS` when the wallet has not enough
+id) is hashed, never stored. Returns the `Payment` (`awaiting_approval`, or
+`processing` when no hold applies: it is queued and paid by the next queue
+run). 422 `INSUFFICIENT_FUNDS` when the wallet has not enough
 withdrawable (payout) balance; 422 `LIMIT_EXCEEDED` when the amount is outside
 the player's effective limits (per request or rolling day/week/month caps — the
 message never says which); 422 `REQUEST_IN_PROGRESS` when the player already
@@ -312,12 +341,11 @@ player.
 ### `admin-payments-approve` — POST `.../{id}/approve` · `admin-payments-reject` — POST `.../{id}/reject`
 
 Body `{ "note": "..." }` (optional on approve, required on reject, max 500).
-Only `awaiting_approval` payments; otherwise 422 `INVALID_STATE`; a decision
-that lost a race is 409 `CONFLICT`. Approving a deposit credits the wallet;
-approving a withdrawal submits the bank transfer; when the payout account at
-the provider cannot cover it, the withdrawal stays `awaiting_approval` with the
-money still blocked and the call answers 422 `PROVIDER_FUNDS`, so the operator
-knows to fund the account and approve again. Rejecting releases the
+Only `awaiting_approval` payments (reject also takes a `queued` withdrawal);
+otherwise 422 `INVALID_STATE`; a decision that lost a race is 409 `CONFLICT`.
+Approving a deposit credits the wallet; approving a withdrawal puts it in the
+queue (`queued`, see the withdrawal lifecycle): the bank transfer is sent by
+the queue run once the provider account covers it. Rejecting releases the
 withdrawal's blocked amount; a rejected deposit never touches the wallet (the
 money the payer sent stays with the operator to refund outside the platform;
 the event trail records it). Returns the `Payment`.
@@ -347,6 +375,8 @@ read; only a **root** operator (empty chain) may update, others get 403.
   "dailyWithdrawalMax": null, "weeklyWithdrawalMax": null, "monthlyWithdrawalMax": null,
   "maxOpenWithdrawals": 1,
   "withdrawalAccountId": null,      // provider account the bank transfers are paid from; null = the deployment's account
+  "depositAccountId": null,         // provider account deposits are opened on; null = not sent (the provider picks by country)
+  "withdrawalQueueMode": "fifo_stop_on_fail", // or "fit"; see the withdrawal queue
   "currency": "ARS",                // read-only, from the deployment
   "updatedAt": "...", "updatedBy": "<partyId>" | null
 }
@@ -410,6 +440,36 @@ For a withdrawal that is `processing` **without a provider reference** (its
 The operator finds the transfer at the provider by its external id, which is
 the payment `id`. Returns the `Payment`. 422 `INVALID_STATE` for any other
 payment or when a reference already exists (those resolve on their own).
+
+### `admin-queue-list` — GET `/api/v1/payments/admin/withdrawals/queue`
+
+The subtree's `queued` withdrawals in payment order (`priority`, then creation).
+
+```jsonc
+{ "mode": "fifo_stop_on_fail",
+  "balance": 250000.5,     // provider account balance usable for transfers; root operators only, null when the provider did not answer
+  "items": [ /* Payment objects, operator view, each with "priority" */ ] }
+```
+
+### `admin-queue-run` — POST `/api/v1/payments/admin/withdrawals/queue/run`
+
+Pays the caller's tenant queue now (the same thing the minute run does).
+
+```jsonc
+{ "tenant": "root1", "mode": "fifo_stop_on_fail", "balance": 250000.5,
+  "queued": 4, "submitted": 2, "skipped": 0,
+  "stopped": true,          // fifo_stop_on_fail: stopped at one the balance did not cover
+  "busy": false }           // true = another run of this tenant was in progress; nothing was done
+```
+
+`null` when the tenant has nothing queued.
+
+### `admin-payments-prioritize` — PUT `/api/v1/payments/admin/payments/{id}/priority`
+
+Body `{ "priority": 1500 }` (integer ≥ 0; lower is paid first). Only a
+`queued` withdrawal, otherwise 422 `INVALID_STATE`. Returns the `Payment`.
+Positions are assigned in steps of 1000, so to place one between 1000 and
+2000 send 1500.
 
 ## Webhook — POST `/api/v1/payments/webhook`
 

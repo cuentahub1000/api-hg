@@ -2,6 +2,8 @@ import * as path from 'path';
 import { Annotations, ArnFormat, CfnOutput, Duration, RemovalPolicy, Stack, StackProps } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as nodejs from 'aws-cdk-lib/aws-lambda-nodejs';
@@ -33,6 +35,8 @@ export interface FunctionStackProps extends StackProps {
  * `/<env>/api-hg-lambda/webhook-function-url`, which every other
  * function reads as `PROVIDER_WEBHOOK_URL` unless `provider-webhook-url` is
  * set in SSM. `migrate` has no route; the deploy script invokes it.
+ * `queue-run` has no route either: an EventBridge rule invokes it on its
+ * `schedule` (every minute) to pay the withdrawal queues.
  */
 export class FunctionStack extends Stack {
   readonly fn: lambda.Function;
@@ -85,7 +89,7 @@ export class FunctionStack extends Stack {
     // Every JWT-authenticated function checks the caller's session against
     // api-auth and (operator writes) role features against api-security, both
     // read-only, reader endpoints.
-    const checksSecurity = fn.slug !== 'webhook' && fn.slug !== 'migrate';
+    const checksSecurity = fn.slug !== 'webhook' && fn.slug !== 'migrate' && !fn.schedule;
     if (checksSecurity) {
       env.AUTH_DB_HOST = StringParameter.valueForStringParameter(this, `/${cfg.envName}/ApiAuthDatabaseReadOnlyHost`);
       env.AUTH_DB_PORT = StringParameter.valueForStringParameter(this, `/${cfg.envName}/ApiAuthDatabasePort`);
@@ -162,6 +166,15 @@ export class FunctionStack extends Stack {
         } : {}),
       },
     });
+
+    if (fn.schedule) {
+      new events.Rule(this, 'Schedule', {
+        ruleName: `${fnName}-schedule`,
+        description: `Invokes ${fnName} (${fn.schedule}).`,
+        schedule: events.Schedule.expression(fn.schedule),
+        targets: [new targets.LambdaFunction(this.fn)],
+      });
+    }
 
     if (fn.publicUrl) {
       const url = this.fn.addFunctionUrl({ authType: lambda.FunctionUrlAuthType.NONE });

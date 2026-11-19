@@ -16,7 +16,6 @@ export enum ErrorCodes {
   INVALID_STATE = 'INVALID_STATE',
   LIMIT_EXCEEDED = 'LIMIT_EXCEEDED',
   INSUFFICIENT_FUNDS = 'INSUFFICIENT_FUNDS',
-  PROVIDER_FUNDS = 'PROVIDER_FUNDS',
   CONFLICT = 'CONFLICT',
   REQUEST_IN_PROGRESS = 'REQUEST_IN_PROGRESS',
   BLOCKED = 'BLOCKED',
@@ -146,16 +145,6 @@ export class BlockedError extends PaymentsError {
 }
 
 /** 422 — the wallet refused the withdrawal for lack of withdrawable balance. */
-/** 422 — the payout account at the provider cannot cover the transfer; the withdrawal went back to approval. */
-export class ProviderFundsError extends PaymentsError {
-  constructor(message = 'The payout account does not have enough funds; the withdrawal stays awaiting approval') {
-    super(message);
-    this.name = ErrorCodes.PROVIDER_FUNDS;
-    this.description = message;
-    this.httpErrorStatus = 422;
-  }
-}
-
 export class InsufficientFundsError extends PaymentsError {
   constructor(message = 'Insufficient withdrawable balance') {
     super(message);

@@ -10,16 +10,16 @@
 export type PaymentKind = 'deposit' | 'withdrawal';
 
 export type DepositStatus = 'pending' | 'under_review' | 'awaiting_approval' | 'completed' | 'rejected' | 'expired' | 'cancelled' | 'failed';
-export type WithdrawalStatus = 'awaiting_approval' | 'processing' | 'completed' | 'rejected' | 'failed' | 'cancelled';
+export type WithdrawalStatus = 'awaiting_approval' | 'queued' | 'processing' | 'completed' | 'rejected' | 'failed' | 'cancelled';
 export type PaymentStatus = DepositStatus | WithdrawalStatus;
 
 export const DEPOSIT_STATUSES: readonly DepositStatus[] = ['pending', 'under_review', 'awaiting_approval', 'completed', 'rejected', 'expired', 'cancelled', 'failed'];
-export const WITHDRAWAL_STATUSES: readonly WithdrawalStatus[] = ['awaiting_approval', 'processing', 'completed', 'rejected', 'failed', 'cancelled'];
+export const WITHDRAWAL_STATUSES: readonly WithdrawalStatus[] = ['awaiting_approval', 'queued', 'processing', 'completed', 'rejected', 'failed', 'cancelled'];
 export const ALL_STATUSES: readonly PaymentStatus[] = [...new Set<PaymentStatus>([...DEPOSIT_STATUSES, ...WITHDRAWAL_STATUSES])];
 export const FINAL_STATUSES: readonly PaymentStatus[] = ['completed', 'rejected', 'expired', 'cancelled', 'failed'];
 export const OPEN_STATUSES: readonly PaymentStatus[] = ALL_STATUSES.filter((s) => !FINAL_STATUSES.includes(s));
 /** Statuses that count against a player's rolling caps: anything that is or may become money moved. */
-export const COUNTED_STATUSES: readonly PaymentStatus[] = ['pending', 'under_review', 'awaiting_approval', 'processing', 'completed'];
+export const COUNTED_STATUSES: readonly PaymentStatus[] = ['pending', 'under_review', 'awaiting_approval', 'queued', 'processing', 'completed'];
 
 export function isFinal(status: PaymentStatus): boolean {
   return FINAL_STATUSES.includes(status);
@@ -68,6 +68,8 @@ export interface PaymentRow {
   decided_by_name: string | null;
   decided_at: string | null;
   error_code: string | null;
+  /** Place in the withdrawal queue (lower first); null outside the queue. bigint, so a string from pg. */
+  priority: string | null;
   created_at: string;
   updated_at: string;
   completed_at: string | null;
@@ -134,6 +136,8 @@ export interface PaymentAdminView extends PaymentView {
   decidedByName: string | null;
   decidedAt: string | null;
   errorCode: string | null;
+  /** Withdrawals: place in the queue, lower first. */
+  priority: number | null;
 }
 
 export function money(v: string | number | null | undefined): number | null {
@@ -156,7 +160,8 @@ export function playerView(r: PaymentRow): PaymentView {
   return {
     id: r.id,
     kind: r.kind,
-    status: r.status,
+    // A queued withdrawal is "in process" to the player; the queue is an operator concern.
+    status: r.status === 'queued' ? 'processing' : r.status,
     amount: money(r.amount) ?? 0,
     currency: r.currency,
     fee: money(r.fee),
@@ -175,6 +180,7 @@ export function playerView(r: PaymentRow): PaymentView {
 export function adminView(r: PaymentRow): PaymentAdminView {
   return {
     ...playerView(r),
+    status: r.status,
     checkoutUrl: r.p_checkout_url,
     expiresAt: r.p_expires_at,
     destination: r.destination,
@@ -196,6 +202,7 @@ export function adminView(r: PaymentRow): PaymentAdminView {
     decidedByName: r.decided_by_name,
     decidedAt: r.decided_at,
     errorCode: r.error_code,
+    priority: r.priority === null ? null : Number(r.priority),
   };
 }
 
@@ -207,6 +214,13 @@ export interface KindLimits {
   weekly: number | null;
   monthly: number | null;
 }
+
+/**
+ * `fifo_stop_on_fail`: in queue order, stop at the first that does not fit.
+ * `fit`: in queue order, pay every one that fits, skip the rest.
+ */
+export type WithdrawalQueueMode = 'fifo_stop_on_fail' | 'fit';
+export const QUEUE_MODES: readonly WithdrawalQueueMode[] = ['fifo_stop_on_fail', 'fit'];
 
 export interface Settings {
   depositsEnabled: boolean;
@@ -228,6 +242,10 @@ export interface Settings {
   maxOpenWithdrawals: number;
   /** Provider account the bank transfers are paid from; null = the deployment's account. */
   withdrawalAccountId: string | null;
+  /** Provider account deposits are opened on; null = not sent (the provider picks by country). */
+  depositAccountId: string | null;
+  /** How the queue run pays queued withdrawals from the account's balance. */
+  withdrawalQueueMode: WithdrawalQueueMode;
   currency: string;
   updatedAt: string | null;
   updatedBy: string | null;
