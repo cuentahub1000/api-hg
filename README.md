@@ -95,7 +95,7 @@ scripts/bootstrap-ssm.sh <env>        # app-owned SSM parameters + <env>/HgSecre
 scripts/ssm-status.sh <env>           # what is set, what is PENDING
 cd cdk && npm install                 # root dependencies (esbuild) are installed by synth/deploy:all themselves
 envName=<env> npm run synth
-envName=<env> npm run deploy:all       # resource group -> database -> webhook -> functions; deploys only
+envName=<env> npm run deploy:all       # database -> webhook -> functions -> resource group, 4 stacks at a time; deploys only
 envName=<env> npm run migrate          # separate, explicit step: invokes <env>-hg-migrate to apply sql/
 ```
 

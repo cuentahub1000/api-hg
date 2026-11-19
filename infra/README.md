@@ -34,8 +34,10 @@ transfers; webhook URL + signing secret are registered in its dashboard.
 
 ## Order of deployment
 
-`cdk deploy --all`: resource group → database → webhook → other functions
-(they read the webhook URL from SSM) → `migrate` invoked by the npm script.
+`cdk deploy --all`: database → webhook → other functions (they read the
+webhook URL from SSM) → resource group → `migrate` invoked by the npm script.
+Every SSM value a function uses is resolved by its own stack at deploy, so a
+changed parameter redeploys the functions and nothing else.
 `deploy:all` in `cdk/package.json` does all of it.
 
 ## Not here

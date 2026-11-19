@@ -189,3 +189,11 @@ Not committed, not deployed.
   Settings: `depositAccountId` (sent to the provider only when set) and
   `withdrawalQueueMode`. Deploy: `deploy:all` (new stacks + routes), `migrate`,
   Feature rows for the three new operator routes.
+
+- CDK: SSM values (plain env, security groups, OTel endpoint, wallet invoker
+  policy ARN) are resolved inside each function stack instead of once in the
+  resource-group scope. Before, they were cross-stack exports of
+  `<env>-ApiHgResourceGroup`, and CloudFormation refused to change an export
+  in use, so editing any `payments-*` / `provider-*` parameter blocked every
+  deploy. The resource group now deploys after the function stacks (needed
+  once to drop the exports; harmless afterwards).

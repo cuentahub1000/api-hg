@@ -37,8 +37,13 @@ export interface EnvConfig {
   readonly envName: string;
   readonly vpcId: string;
   readonly privateSubnetIds: readonly string[];
+  /** Extra security groups for the functions: literal ids from `lambda-sg-ids`. */
   readonly lambdaSgIds: readonly string[];
+  /** ...or, when that is unset, the platform SSM parameters each stack resolves itself at deploy. */
+  readonly lambdaSgParams: readonly string[];
+  /** OTel collector: a literal override from `otel-endpoint`, else '' and `otelEndpointParam` names the platform parameter. */
   readonly otelEndpoint: string;
+  readonly otelEndpointParam: string;
   readonly jwtSecretName: string;
   readonly paymentsSecretName: string;
   readonly dbSecretName: string;
@@ -48,12 +53,20 @@ export interface EnvConfig {
   readonly securityDbSecretName: string;
   /** RDS instance class for the payments database, from `db-instance-type` (default t4g.micro). */
   readonly dbInstanceType: string;
-  /** Plain (non-secret) env vars, one per SSM parameter. */
-  readonly plainEnv: Readonly<Record<string, string>>;
+  /**
+   * Plain (non-secret) env vars: env var -> full SSM parameter name. Each
+   * function stack resolves them in its own scope at deploy time. Resolving
+   * them once here would make them exports of the resource-group stack, and
+   * CloudFormation refuses to change an export another stack imports: one
+   * edited parameter would block every deploy.
+   */
+  readonly plainEnvParams: Readonly<Record<string, string>>;
+  /** Environment whose wallet functions (`<walletEnv>-wallet-<route>`) are called; normally this one. */
+  readonly walletEnv: string;
   /** Wallet reached as Lambdas: attach the wallet's invoker policy to the execution roles. */
   readonly walletMode: 'lambda' | 'http';
-  /** ARN of the wallet invoker managed policy (deploy-time token), or '' when not published. */
-  readonly walletInvokerPolicyArn: string;
+  /** SSM parameter holding the wallet invoker managed policy ARN, or '' when not published. */
+  readonly walletInvokerPolicyParam: string;
   /** True when `provider-webhook-url` is set (an ingress in front of the HTTP runtime); else the webhook Function URL is used. */
   readonly webhookUrlOverridden: boolean;
   /** Custom domain of the public webhook (CloudFront). Empty = functions use the Function URL as is. */
@@ -97,33 +110,27 @@ export function loadConfig(scope: Construct, envName: string): EnvConfig {
 
   const platformSynth = (name: string) => StringParameter.valueFromLookup(scope, `${platformRoot}/${name}`, '-');
   const synth = (name: string) => StringParameter.valueFromLookup(scope, `${root}/${name}`, '-');
-  const deploy = (name: string) => StringParameter.valueForStringParameter(scope, `${root}/${name}`);
+  // Deploy-time values are NOT resolved here (see `plainEnvParams`): only the
+  // parameter names are passed on, and each function stack reads them itself.
 
   const sgIds = synth('lambda-sg-ids');
-  // Deploy-time reads (never cached in cdk.context.json): the functions must sit
-  // in both platform client groups, the general one and the one the shared
-  // database cluster (api-security) admits on 5432.
-  const platformDeploy = (name: string) => StringParameter.valueForStringParameter(scope, `${platformRoot}/${name}`);
   const otelOverride = synth('otel-endpoint');
 
-  const plainEnv: Record<string, string> = {};
+  const plainEnvParams: Record<string, string> = {};
   for (const [envVar, ssmName] of PLAIN_PARAMS) {
     // Synth-time lookup so an unset parameter is simply absent from the
     // function's environment, instead of a CloudFormation failure at deploy.
-    if (isPresent(synth(ssmName))) plainEnv[envVar] = deploy(ssmName);
+    if (isPresent(synth(ssmName))) plainEnvParams[envVar] = `${root}/${ssmName}`;
   }
-  // Wallet functions are always `<env>-wallet-<route>`; `wallet-env` only points at another environment's wallet.
-  const walletEnv = isPresent(synth('wallet-env')) ? synth('wallet-env') : envName;
-  plainEnv.WALLET_FUNCTION_PREFIX = `${walletEnv}-wallet-`;
   const walletMode = (isPresent(synth('wallet-mode')) ? synth('wallet-mode') : 'lambda').toLowerCase() === 'http' ? 'http' : 'lambda';
 
   // The wallet publishes its invoker policy ARN; an override slot exists for an
   // environment where the wallet functions live under another name.
-  let walletInvokerPolicyArn = '';
+  let walletInvokerPolicyParam = '';
   if (walletMode === 'lambda') {
-    if (isPresent(synth('wallet-invoker-policy-arn'))) walletInvokerPolicyArn = deploy('wallet-invoker-policy-arn');
+    if (isPresent(synth('wallet-invoker-policy-arn'))) walletInvokerPolicyParam = `${root}/wallet-invoker-policy-arn`;
     else if (isPresent(StringParameter.valueFromLookup(scope, `/${envName}/api-wallet-lambda/invoker-policy-arn`, '-'))) {
-      walletInvokerPolicyArn = StringParameter.valueForStringParameter(scope, `/${envName}/api-wallet-lambda/invoker-policy-arn`);
+      walletInvokerPolicyParam = `/${envName}/api-wallet-lambda/invoker-policy-arn`;
     }
   }
 
@@ -131,19 +138,22 @@ export function loadConfig(scope: Construct, envName: string): EnvConfig {
     envName,
     vpcId: platformSynth('VpcId'),
     privateSubnetIds: [platformSynth('PrivateSubnet1'), platformSynth('PrivateSubnet2')].filter(isPresent),
-    lambdaSgIds: isPresent(sgIds) ? splitList(sgIds).slice(0, 2) : [platformDeploy('ClientSecurityGroupId'), platformDeploy('DatabaseClientSecurityGroupId')],
-    otelEndpoint: isPresent(otelOverride) && otelOverride !== 'none'
-      ? otelOverride
-      : isPresent(platformSynth('MainOtelEndpoint')) ? StringParameter.valueForStringParameter(scope, `${platformRoot}/MainOtelEndpoint`) : '',
+    lambdaSgIds: isPresent(sgIds) ? splitList(sgIds).slice(0, 2) : [],
+    // Without `lambda-sg-ids` the functions sit in both platform client groups:
+    // the general one and the one the shared database cluster admits on 5432.
+    lambdaSgParams: isPresent(sgIds) ? [] : [`${platformRoot}/ClientSecurityGroupId`, `${platformRoot}/DatabaseClientSecurityGroupId`],
+    otelEndpoint: isPresent(otelOverride) && otelOverride !== 'none' ? otelOverride : '',
+    otelEndpointParam: isPresent(otelOverride) || !isPresent(platformSynth('MainOtelEndpoint')) ? '' : `${platformRoot}/MainOtelEndpoint`,
     jwtSecretName: `${envName}/JWTSecret`,
     paymentsSecretName: `${envName}/HgSecrets`,
     dbSecretName: `${envName}/HgDatabase/postgres`,
     authDbSecretName: `${envName}/ApiAuthDatabaseReadOnlySecret`,
     securityDbSecretName: `${envName}/ApiSecurityDatabaseReadOnlySecret`,
     dbInstanceType: isPresent(synth('db-instance-type')) ? synth('db-instance-type') : 't4g.micro',
-    plainEnv,
+    plainEnvParams,
+    walletEnv: isPresent(synth('wallet-env')) ? synth('wallet-env') : envName,
     walletMode,
-    walletInvokerPolicyArn,
+    walletInvokerPolicyParam,
     webhookUrlOverridden: isPresent(synth('provider-webhook-url')),
     webhookDomain: isPresent(synth('webhook-domain')) ? synth('webhook-domain') : '',
     webhookHostedZoneId: isPresent(synth('webhook-hosted-zone-id')) ? synth('webhook-hosted-zone-id') : '',

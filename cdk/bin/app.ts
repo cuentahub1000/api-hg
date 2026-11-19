@@ -25,8 +25,8 @@ cdk.Tags.of(rg).add('Component', 'resource-group');
 
 const cfg = loadConfig(rg, envName);
 
-// `cdk deploy --all` orders: resource group -> database -> webhook -> the
-// other functions (they read the webhook's Function URL from SSM at deploy).
+// `cdk deploy --all` orders: database -> webhook -> the other functions (they
+// read the webhook's Function URL from SSM at deploy) -> resource group.
 const database = new DatabaseStack(app, `${envName}-HgDatabase`, { env, cfg });
 cdk.Tags.of(database).add('Component', 'payments-database');
 
@@ -39,6 +39,11 @@ for (const fn of FUNCTIONS) {
 }
 const webhook = stacks.get('webhook')!;
 for (const [slug, stack] of stacks) if (slug !== 'webhook' && slug !== 'migrate') stack.addDependency(webhook);
+// The resource group (invoker policies naming the functions) deploys after the
+// function stacks. This also carries the one-time change away from exported
+// parameter values: the function stacks must drop their imports before the
+// resource-group stack can drop the exports, or CloudFormation refuses both.
+for (const stack of stacks.values()) rg.addDependency(stack);
 
 // Public webhook on a custom domain. Always defined, never part of
 // `deploy:all`: it is deployed (and removed) only by its own explicit command,

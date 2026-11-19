@@ -26,6 +26,10 @@ export interface FunctionStackProps extends StackProps {
  * access. The database security group gets an ingress rule from the
  * function's security group.
  *
+ * Every value that may change between deploys (SSM parameters) is resolved in
+ * this stack's own scope, never passed in from the app, so no stack exports
+ * it to another and a changed parameter redeploys only the functions.
+ *
  * Every JWT function also reads api-auth (`AUTH_DB_*`, the `Session` table) and
  * api-security (`SECURITY_DB_*`, role features), both read-only, for
  * the per-call session and feature checks.
@@ -49,6 +53,7 @@ export class FunctionStack extends Stack {
     const fnName = `${cfg.envName}-hg-${fn.slug}`;
     const root = SSM_ROOT(cfg.envName);
     const deployParam = (name: string) => StringParameter.valueForStringParameter(this, `${root}/${name}`);
+    const ssm = (fullName: string) => StringParameter.valueForStringParameter(this, fullName);
 
     let vpc: ec2.IVpc | undefined;
     let vpcSubnets: ec2.SubnetSelection | undefined;
@@ -61,7 +66,7 @@ export class FunctionStack extends Stack {
       Annotations.of(this).acknowledgeWarning('@aws-cdk/aws-ec2:noSubnetRouteTableId', 'Subnets are imported by id for Lambda placement only.');
       const own = new ec2.SecurityGroup(this, 'FnSg', { vpc, allowAllOutbound: true, description: `egress sg for ${fnName}`, securityGroupName: `${fnName}-egress` });
       securityGroups.push(own);
-      cfg.lambdaSgIds.forEach((sgId, i) => securityGroups.push(ec2.SecurityGroup.fromSecurityGroupId(this, `LambdaSg${i}`, sgId, { mutable: false })));
+      [...cfg.lambdaSgIds, ...cfg.lambdaSgParams.map(ssm)].forEach((sgId, i) => securityGroups.push(ec2.SecurityGroup.fromSecurityGroupId(this, `LambdaSg${i}`, sgId, { mutable: false })));
       // Ingress to the payments database from this function only.
       const dbSg = ec2.SecurityGroup.fromSecurityGroupId(this, 'DbSg', deployParam('db-sg-id'), { mutable: true });
       dbSg.addIngressRule(own, ec2.Port.tcp(5432), `${fnName} to payments postgres`);
@@ -79,8 +84,9 @@ export class FunctionStack extends Stack {
       DB_NAME: deployParam('db-name'),
       DB_SECRET_ARN: cfg.dbSecretName,
       LOG_LEVEL: process.env.LOG_LEVEL || 'info',
-      ...cfg.plainEnv,
+      WALLET_FUNCTION_PREFIX: `${cfg.walletEnv}-wallet-`,
     };
+    for (const [envVar, param] of Object.entries(cfg.plainEnvParams)) env[envVar] = ssm(param);
     if (!cfg.webhookUrlOverridden && fn.slug !== 'webhook' && fn.slug !== 'migrate') {
       // With a custom domain the provider is told the CloudFront URL; otherwise the Function URL.
       env.PROVIDER_WEBHOOK_URL = cfg.webhookDomain ? `https://${cfg.webhookDomain}${WEBHOOK_PATH}` : deployParam('webhook-function-url');
@@ -100,8 +106,8 @@ export class FunctionStack extends Stack {
       env.SECURITY_DB_NAME = StringParameter.valueForStringParameter(this, `/${cfg.envName}/ApiSecurityDatabaseName`);
       env.SECURITY_DB_SECRET_ARN = cfg.securityDbSecretName;
     }
-    if (cfg.otelEndpoint !== '') {
-      env.OTEL_EXPORTER_OTLP_ENDPOINT = cfg.otelEndpoint;
+    if (cfg.otelEndpoint !== '' || cfg.otelEndpointParam !== '') {
+      env.OTEL_EXPORTER_OTLP_ENDPOINT = cfg.otelEndpoint !== '' ? cfg.otelEndpoint : ssm(cfg.otelEndpointParam);
       env.OTEL_EXPORTER_OTLP_PROTOCOL = 'http/protobuf';
       env.OTEL_SERVICE_NAME = fnName;
       env.OTEL_RESOURCE_ATTRIBUTES = `service.namespace=api-hg-lambda,deployment.environment=${cfg.envName}`;
@@ -130,8 +136,8 @@ export class FunctionStack extends Stack {
         this.formatArn({ service: 'secretsmanager', resource: 'secret', resourceName: `${secretName}*`, arnFormat: ArnFormat.COLON_RESOURCE_NAME })),
     }));
     if (vpc) role.addManagedPolicy(iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaVPCAccessExecutionRole'));
-    if (cfg.walletMode === 'lambda' && cfg.walletInvokerPolicyArn && fn.slug !== 'migrate') {
-      role.addManagedPolicy(iam.ManagedPolicy.fromManagedPolicyArn(this, 'WalletInvoke', cfg.walletInvokerPolicyArn));
+    if (cfg.walletMode === 'lambda' && cfg.walletInvokerPolicyParam && fn.slug !== 'migrate') {
+      role.addManagedPolicy(iam.ManagedPolicy.fromManagedPolicyArn(this, 'WalletInvoke', ssm(cfg.walletInvokerPolicyParam)));
     }
 
     const repoRoot = path.join(__dirname, '..', '..');
