@@ -42,10 +42,11 @@ export interface CreatePayoutInput { paymentId: string; amount: number; destinat
 export interface PaymentProvider {
   readonly name: string;
   createCheckout(input: CreateCheckoutInput): Promise<Checkout>;
-  getCheckout(ref: string): Promise<Checkout | null>;
-  cancelCheckout(ref: string): Promise<void>;
+  /** `paymentId` is only for the exchange log (`provider_log`). */
+  getCheckout(ref: string, paymentId?: string): Promise<Checkout | null>;
+  cancelCheckout(ref: string, paymentId?: string): Promise<void>;
   createPayout(input: CreatePayoutInput): Promise<Payout>;
-  getPayout(ref: string): Promise<Payout | null>;
+  getPayout(ref: string, paymentId?: string): Promise<Payout | null>;
   /** Our status for one of the provider's checkout statuses; null = no change. */
   mapCheckoutStatus(status: string): 'paid' | 'under_review' | 'rejected' | 'expired' | 'cancelled' | 'pending' | null;
   /** Our outcome for one of the provider's payout statuses; null = still on its way. */

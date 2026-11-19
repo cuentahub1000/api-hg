@@ -14,6 +14,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { getConfig, type ProviderConfig } from '../../_common/config';
 import { NotConfiguredError } from '../../_common/errors';
 import { upstream } from '../../_common/http';
+import { recordRequest } from '../provider-log';
 import type { Checkout, CreateCheckoutInput, CreatePayoutInput, PaymentProvider, Payout } from './index';
 import { sandboxCancelCheckout, sandboxCreateCheckout, sandboxCreatePayout, sandboxGetCheckout, sandboxGetPayout } from './sandbox';
 
@@ -23,12 +24,14 @@ async function cfg(): Promise<ProviderConfig> {
   return p;
 }
 
-async function call<T>(method: 'GET' | 'POST', path: string, body?: unknown, allow?: number[]): Promise<{ status: number; data: T }> {
+async function call<T>(method: 'GET' | 'POST', path: string, body?: unknown, allow?: number[], paymentId?: string | null): Promise<{ status: number; data: T }> {
   const p = await cfg();
   const { upstreamTimeoutMs } = await getConfig();
   return upstream<T>('payment provider', {
     method, url: `${p.apiUrl}${path}`, body, timeoutMs: upstreamTimeoutMs, allow,
     headers: { authorization: `Bearer ${p.apiToken}` },
+    // every exchange with the provider lands in provider_log (masked) for the back-office
+    observe: (o) => recordRequest({ paymentId: paymentId ?? null, provider: 'hg', method, path, ...o }),
   });
 }
 
@@ -48,24 +51,25 @@ export const hgProvider: PaymentProvider = {
       expiresInSeconds: 86400,
       locale: input.locale === 'en' ? 'en' : 'es',
     };
-    if (p.accountId) body.accountId = p.accountId;
+    // No accountId here: the provider ties the account to a country and rejects
+    // checkouts for others; the account is only needed for payouts.
     if (p.webhookUrl) body.webhookUrl = p.webhookUrl;
     if (input.payer && (input.payer.document || input.payer.name || input.payer.email)) {
       body.payer = { document: input.payer.document, name: input.payer.name, email: input.payer.email };
     }
-    const { data } = await call<Record<string, unknown>>('POST', '/checkouts', body);
+    const { data } = await call<Record<string, unknown>>('POST', '/checkouts', body, undefined, input.paymentId);
     return toCheckout(data);
   },
 
-  async getCheckout(ref) {
+  async getCheckout(ref, paymentId) {
     if ((await cfg()).mode === 'mock') return sandboxGetCheckout(ref);
-    const { status, data } = await call<Record<string, unknown>>('GET', `/checkouts/${encodeURIComponent(ref)}`, undefined, [404]);
+    const { status, data } = await call<Record<string, unknown>>('GET', `/checkouts/${encodeURIComponent(ref)}`, undefined, [404], paymentId);
     return status === 404 ? null : toCheckout(data);
   },
 
-  async cancelCheckout(ref) {
+  async cancelCheckout(ref, paymentId) {
     if ((await cfg()).mode === 'mock') { await sandboxCancelCheckout(ref); return; }
-    await call('POST', `/checkouts/${encodeURIComponent(ref)}/cancel`, undefined, [404, 409, 422]);
+    await call('POST', `/checkouts/${encodeURIComponent(ref)}/cancel`, undefined, [404, 409, 422], paymentId);
   },
 
   async createPayout(input) {
@@ -81,13 +85,13 @@ export const hgProvider: PaymentProvider = {
     body[input.destination.type === 'cvu' ? 'toCVU' : 'toCBU'] = input.destination.value;
     if (input.destination.holderName) body.toName = input.destination.holderName;
     if (p.webhookUrl) body.webhookUrl = p.webhookUrl;
-    const { data } = await call<Record<string, unknown>>('POST', '/transactions', body);
+    const { data } = await call<Record<string, unknown>>('POST', '/transactions', body, undefined, input.paymentId);
     return toPayout(data);
   },
 
-  async getPayout(ref) {
+  async getPayout(ref, paymentId) {
     if ((await cfg()).mode === 'mock') return sandboxGetPayout(ref);
-    const { status, data } = await call<Record<string, unknown>>('GET', `/transaction/${encodeURIComponent(ref)}/status`, undefined, [404]);
+    const { status, data } = await call<Record<string, unknown>>('GET', `/transaction/${encodeURIComponent(ref)}/status`, undefined, [404], paymentId);
     return status === 404 ? null : toPayout(data);
   },
 

@@ -141,3 +141,11 @@ Not committed, not deployed.
   token lacks the wallet feature and a pending credit was unwanted). The
   operation is created and completed together in `completeDeposit`, as the
   service, when the provider confirms. Withdrawals unchanged (block at creation).
+
+- Checkouts no longer send `accountId` (the provider binds the account to a
+  country and rejected it); payouts still do.
+- New table `provider_log` (sql/008, needs `npm run migrate`): every call to
+  the provider and every webhook delivery, bodies masked (`maskBody` in
+  `_common/http.ts`). `admin-payments-get` returns them as `logs`.
+  `LAMBDA_API.md` documents `logs` and the return/cancel URL behaviour for the
+  player UI.

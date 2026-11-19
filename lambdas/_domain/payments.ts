@@ -27,6 +27,7 @@ import type { SecurityContext } from '../_common/auth';
 import { provider, type Checkout, type Payout } from './providers';
 import * as wallet from './wallet';
 import { SERVICE, asCaller, type WalletAuth } from './wallet';
+import { logsFor, type ProviderLogView } from './provider-log';
 import { getSettings, needsHold } from './settings';
 import { checkBlock, checkLimits } from './players';
 import {
@@ -122,10 +123,11 @@ export async function getForPlayer(ctx: SecurityContext, id: string): Promise<Pa
   return playerView(row);
 }
 
-export async function getForOperator(ctx: SecurityContext, id: string): Promise<{ payment: PaymentAdminView; events: Array<{ at: string; actor: string; actorName: string | null; type: string; data: unknown }> }> {
+export async function getForOperator(ctx: SecurityContext, id: string): Promise<{ payment: PaymentAdminView; events: Array<{ at: string; actor: string; actorName: string | null; type: string; data: unknown }>; logs: ProviderLogView[] }> {
   const row = await rowFor(id, { fullChain: ctx.fullChain });
   const events = await db.query<PaymentEventRow>('SELECT * FROM payment_event WHERE payment_id = $1 ORDER BY id', [row.id]);
-  return { payment: adminView(row), events: events.map((e) => ({ at: e.at, actor: e.actor, actorName: e.actor_name, type: e.type, data: e.data })) };
+  const logs = await logsFor(row.id);
+  return { payment: adminView(row), events: events.map((e) => ({ at: e.at, actor: e.actor, actorName: e.actor_name, type: e.type, data: e.data })), logs };
 }
 
 /**
@@ -384,7 +386,7 @@ async function release(row: PaymentRow, auth: WalletAuth, status: 'rejected' | '
     walletStatus = op.status;
   }
   if (row.kind === 'deposit' && row.p_ref && row.status === 'pending' && status === 'cancelled' && actor !== 'provider') {
-    await (await provider()).cancelCheckout(row.p_ref).catch((err) => log.warn('checkout cancel failed', { id: row.id, err: String(err) }));
+    await (await provider()).cancelCheckout(row.p_ref, row.id).catch((err) => log.warn('checkout cancel failed', { id: row.id, err: String(err) }));
   }
   const updated = await patch(row.id, {
     status, wallet_status: walletStatus, note: note ?? row.note, error_code: errorCode ?? null,
@@ -490,13 +492,13 @@ export async function recheck(row: PaymentRow, auth: WalletAuth = SERVICE): Prom
   if (!row.p_ref || isFinal(row.status)) return row;
   const prov = await provider();
   if (row.kind === 'deposit') {
-    const co: Checkout | null = await prov.getCheckout(row.p_ref);
+    const co: Checkout | null = await prov.getCheckout(row.p_ref, row.id);
     if (!co) return row;
     if (co.status.toLowerCase() === (row.p_status ?? '').toLowerCase()) { await patch(row.id, {}); return row; }
     return applyCheckout(row.p_ref, co.status, 'system', { transactionId: co.transactionId, source: 'recheck' }, auth);
   }
   if (row.status !== 'processing') return row;
-  const po: Payout | null = await prov.getPayout(row.p_ref);
+  const po: Payout | null = await prov.getPayout(row.p_ref, row.id);
   if (!po) return row;
   if (po.status === row.p_status) { await patch(row.id, {}); return row; }
   return applyPayout(row.p_ref, po.status, 'system', { errorCode: po.errorCode }, auth);

@@ -162,13 +162,41 @@ The amount is **blocked in the wallet the moment the request is accepted**
   "payer": { "document": "30123456", "name": "Ana Perez", "email": "ana@example.com" } } // optional; document required for some countries
 ```
 
-Returns the `Payment` (`pending`) with `checkoutUrl`. Send the player there;
-after paying they come back to the configured return URL with
-`?payment=<id>`. 422 `LIMIT_EXCEEDED` outside the player's effective limits
+Returns the `Payment` (`pending`) with `checkoutUrl`. Send the player there.
+422 `LIMIT_EXCEEDED` outside the player's effective limits
 (per request or rolling caps; generic message), 403 `BLOCKED` when an operator
 blocked deposits for the player, 503 `NOT_CONFIGURED` when deposits are
 disabled. `payer.document` is forwarded to the provider and kept only as
 `documentHash`.
+
+#### Coming back from the payment page (player UI)
+
+The payment page sends the player back to two URLs that the operator sets per
+environment (`payments-return-url` and `payments-cancel-url`). The service
+appends the payment id:
+
+| When | Where the player lands |
+|---|---|
+| Payment finished on the page | `<return url>?payment=<id>` |
+| Player left / cancelled the page | `<cancel url>?payment=<id>&cancelled=1` |
+
+The UI behind both URLs should read `payment`, call `payments-get` and show
+the status it returns, polling while it is not final. Landing on the return
+URL is not proof of payment: the status changes only when the provider
+confirms it (webhook, or the re-check that `payments-get` runs on a pending
+deposit). What each status means for the player:
+
+| `status` | Show |
+|---|---|
+| `pending` | not paid yet; `checkoutUrl` is still valid, offer "continue payment" |
+| `awaiting_approval`, `under_review` | paid, being reviewed, will be credited |
+| `completed` | credited to the balance |
+| `rejected`, `failed` | could not be completed |
+| `expired`, `cancelled` | no longer available, offer a new deposit |
+
+The `cancelled=1` flag only says the player came from the cancel link; the
+payment itself may still be `pending` (the page can be reopened) until it
+expires or is cancelled.
 
 ### `withdrawals-create` — POST `/api/v1/payments/withdrawals`
 
@@ -222,14 +250,25 @@ operator fields.
 ### `admin-payments-get` — GET `/api/v1/payments/admin/payments/{id}`
 
 ```jsonc
-{ "payment": Payment, "events": [ { "at": "...", "actor": "player" | "operator:<partyId>" | "provider" | "system", "actorName": "Ana Perez" | null, "type": "created", "data": {} } ] }
+{ "payment": Payment,
+  "events": [ { "at": "...", "actor": "player" | "operator:<partyId>" | "provider" | "system", "actorName": "Ana Perez" | null, "type": "created", "data": {} } ],
+  "logs":   [ { "id": "41", "at": "...", "kind": "request" | "webhook", "method": "POST" | null, "path": "/checkouts" | null,
+                "status": 400, "ms": 664, "request": {}, "response": {}, "error": "HTTP 400" | null } ] }
 ```
 
 `actorName` is the display name of the player or operator behind the event;
 show it, not the id.
 
-```jsonc
-```
+`logs` is the exchange with the payment provider for this payment, newest
+first, up to 100 rows: `request` rows are calls this service made (`method`,
+`path`, the provider's HTTP `status`, `0` when unreachable); `webhook` rows are
+deliveries the provider made for this payment (`status` is what the service
+answered, `401` for a bad signature, `200` for accepted or duplicate).
+`request` and `response` are the bodies as sent and received, with sensitive
+values (credentials, national ids, emails, phones, bank account numbers)
+replaced by `"[redacted]"`; show them as formatted JSON. `error` is set when
+the exchange failed. Rows are for operators only; never surface them to a
+player.
 
 ### `admin-payments-approve` — POST `.../{id}/approve` · `admin-payments-reject` — POST `.../{id}/reject`
 
@@ -316,4 +355,6 @@ has not changed for 10 minutes. `{ "checked": 12, "updated": 3 }`.
 
 Called by the provider, not by the front-ends. Raw body + the provider's
 signature header; unsigned or badly signed calls are 401. Idempotent: a
-delivery already processed answers 200 without side effects.
+delivery already processed answers 200 without side effects. Every delivery,
+accepted or refused, appears masked in the payment's `logs`
+(`admin-payments-get`) when it names a known payment.

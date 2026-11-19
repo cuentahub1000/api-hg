@@ -11,14 +11,36 @@
 import { createHash } from 'node:crypto';
 import { db } from '../_common/db';
 import { getConfig } from '../_common/config';
-import { AuthError, NotConfiguredError, ValidationError } from '../_common/errors';
+import { AuthError, NotConfiguredError, PaymentsError, ValidationError } from '../_common/errors';
+import { maskBody } from '../_common/http';
 import { log } from '../_common/logger';
 import { applyCheckout, applyPayout } from './payments';
+import { paymentIdForRef, recordWebhook } from './provider-log';
 import { verifySignature } from './providers/hg';
 
 export interface WebhookResult { accepted: boolean; duplicate: boolean; handled: string }
 
+/** What `provider_log` keeps about one delivery, filled in as `process` goes. */
+interface Trace { paymentId: string | null; request: unknown; response: unknown; status: number; error?: string }
+
+/** Every delivery, accepted or refused, ends up as one `provider_log` row. */
 export async function receive(rawBody: string, signatureHeader: string | undefined): Promise<WebhookResult> {
+  const started = Date.now();
+  const trace: Trace = { paymentId: null, request: maskBody(rawBody.slice(0, 2000)), response: null, status: 200 };
+  try {
+    const result = await process(rawBody, signatureHeader, trace);
+    trace.response = result;
+    return result;
+  } catch (err) {
+    trace.status = err instanceof PaymentsError ? err.httpErrorStatus : 500;
+    trace.error = err instanceof PaymentsError ? err.message : String(err).slice(0, 200);
+    throw err;
+  } finally {
+    await recordWebhook({ provider: 'hg', paymentId: trace.paymentId, status: trace.status, ms: Date.now() - started, request: trace.request, response: trace.response, error: trace.error });
+  }
+}
+
+async function process(rawBody: string, signatureHeader: string | undefined, trace: Trace): Promise<WebhookResult> {
   const cfg = await getConfig();
   if (!cfg.provider) throw new NotConfiguredError('payments');
   const ok = verifySignature(rawBody, signatureHeader, cfg.provider.webhookSecret);
@@ -32,9 +54,11 @@ export async function receive(rawBody: string, signatureHeader: string | undefin
   } catch {
     throw new ValidationError('Validation failed', 'body is not a JSON object');
   }
+  trace.request = maskBody(body);
   const topic = str(body.topic);
   const eventType = str(body.eventType);
   const ref = str(body.id);
+  if (ref) trace.paymentId = await paymentIdForRef('hg', ref);
 
   const inserted = await db.one<{ id: string }>(
     `INSERT INTO webhook_inbox (topic, event_type, provider_ref, dedupe_key, body, signature_ok)

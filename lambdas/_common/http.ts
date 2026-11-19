@@ -18,6 +18,18 @@ export interface UpstreamRequest {
   timeoutMs: number;
   /** Statuses that are an answer, not a failure (e.g. 404 on a lookup). */
   allow?: number[];
+  /** Called once per call with the masked exchange, whatever the outcome. Must not throw. */
+  observe?: (outcome: UpstreamOutcome) => void | Promise<void>;
+}
+
+/** What `observe` receives: the exchange with sensitive values masked. */
+export interface UpstreamOutcome {
+  /** HTTP status; 0 when the provider could not be reached. */
+  status: number;
+  ms: number;
+  request: unknown;
+  response: unknown;
+  error?: string;
 }
 
 export interface UpstreamResponse<T = unknown> {
@@ -49,14 +61,16 @@ export async function upstream<T = unknown>(product: string, req: UpstreamReques
         data = text;
       }
     }
-    if (!res.ok && !(req.allow ?? []).includes(res.status)) {
+    const failed = !res.ok && !(req.allow ?? []).includes(res.status);
+    await observe(req, { status: res.status, ms: Date.now() - started, request: maskBody(req.body), response: maskBody(data), ...(failed ? { error: `HTTP ${res.status}` } : {}) });
+    if (failed) {
       log.warn('upstream error', {
         product,
         method: req.method ?? 'GET',
         path: safePath(req.url),
         status: res.status,
         ms: Date.now() - started,
-        request: req.body === undefined ? undefined : redactBody(req.body),
+        request: req.body === undefined ? undefined : maskBody(req.body),
         body: typeof data === 'string' ? data.slice(0, 500) : data,
       });
       throw new UpstreamError(product, res.status);
@@ -66,26 +80,41 @@ export async function upstream<T = unknown>(product: string, req: UpstreamReques
   } catch (err) {
     if (err instanceof UpstreamError) throw err;
     log.error('upstream unreachable', { product, path: safePath(req.url), err: String(err), ms: Date.now() - started });
+    await observe(req, { status: 0, ms: Date.now() - started, request: maskBody(req.body), response: null, error: String(err).slice(0, 200) });
     throw new UpstreamError(product, 0);
   } finally {
     clearTimeout(timer);
   }
 }
 
-const SENSITIVE = /token|secret|password|key|authorization|document|cpf|cnpj|email|phone|pix/i;
+async function observe(req: UpstreamRequest, outcome: UpstreamOutcome): Promise<void> {
+  if (!req.observe) return;
+  try {
+    await req.observe(outcome);
+  } catch (err) {
+    log.warn('upstream observer failed', { path: safePath(req.url), err: String(err) });
+  }
+}
 
-/** The outgoing body for the error log: same shape, sensitive values masked. */
-function redactBody(value: unknown, depth = 0): unknown {
+/** Keys whose values never reach a log or the operator: credentials, national ids, contacts, bank accounts. */
+const SENSITIVE = /token|secret|password|key|authorization|signature|document|cpf|cnpj|cuit|dni|email|phone|pix|cbu|cvu|iban|card/i;
+
+/**
+ * A request or response body as it may be stored or logged: same shape,
+ * sensitive values replaced by `[redacted]`, long strings cut.
+ */
+export function maskBody(value: unknown, depth = 0): unknown {
+  if (value === undefined) return undefined;
   if (depth > 4) return '[...]';
-  if (Array.isArray(value)) return value.map((v) => redactBody(v, depth + 1));
+  if (Array.isArray(value)) return value.map((v) => maskBody(v, depth + 1));
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = SENSITIVE.test(k) ? (v === null || v === undefined ? v : '[redacted]') : redactBody(v, depth + 1);
+      out[k] = SENSITIVE.test(k) ? (v === null || v === undefined ? v : '[redacted]') : maskBody(v, depth + 1);
     }
     return out;
   }
-  return typeof value === 'string' && value.length > 500 ? `${value.slice(0, 500)}…` : value;
+  return typeof value === 'string' && value.length > 2000 ? `${value.slice(0, 2000)}…` : value;
 }
 
 function safePath(url: string): string {
