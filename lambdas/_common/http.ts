@@ -56,6 +56,7 @@ export async function upstream<T = unknown>(product: string, req: UpstreamReques
         path: safePath(req.url),
         status: res.status,
         ms: Date.now() - started,
+        request: req.body === undefined ? undefined : redactBody(req.body),
         body: typeof data === 'string' ? data.slice(0, 500) : data,
       });
       throw new UpstreamError(product, res.status);
@@ -69,6 +70,22 @@ export async function upstream<T = unknown>(product: string, req: UpstreamReques
   } finally {
     clearTimeout(timer);
   }
+}
+
+const SENSITIVE = /token|secret|password|key|authorization|document|cpf|cnpj|email|phone|pix/i;
+
+/** The outgoing body for the error log: same shape, sensitive values masked. */
+function redactBody(value: unknown, depth = 0): unknown {
+  if (depth > 4) return '[...]';
+  if (Array.isArray(value)) return value.map((v) => redactBody(v, depth + 1));
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = SENSITIVE.test(k) ? (v === null || v === undefined ? v : '[redacted]') : redactBody(v, depth + 1);
+    }
+    return out;
+  }
+  return typeof value === 'string' && value.length > 500 ? `${value.slice(0, 500)}…` : value;
 }
 
 function safePath(url: string): string {
