@@ -226,6 +226,8 @@ export interface Settings {
   weeklyWithdrawalMax: number | null;
   monthlyWithdrawalMax: number | null;
   maxOpenWithdrawals: number;
+  /** Provider account the bank transfers are paid from; null = the deployment's account. */
+  withdrawalAccountId: string | null;
   currency: string;
   updatedAt: string | null;
   updatedBy: string | null;

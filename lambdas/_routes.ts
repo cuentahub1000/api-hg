@@ -46,6 +46,7 @@ export const ROUTES: readonly RouteSpec[] = [
   { slug: 'admin-settings-update',  method: 'PUT',  resource: '/api/v1/payments/admin/settings',              audience: 'operator' },
   { slug: 'admin-payments-cancel',  method: 'POST', resource: '/api/v1/payments/admin/payments/{id}/cancel',  audience: 'operator', timeoutSec: 30 },
   { slug: 'admin-reconcile',        method: 'POST', resource: '/api/v1/payments/admin/reconcile',             audience: 'operator', timeoutSec: 60 },
+  { slug: 'admin-payments-resolve', method: 'POST', resource: '/api/v1/payments/admin/payments/{id}/resolve', audience: 'operator', timeoutSec: 30 },
 
   // --- operator: per-player limits and blocks ---------------------------
   { slug: 'admin-player-get',           method: 'GET',  resource: '/api/v1/payments/admin/players/{partyId}',         audience: 'operator' },

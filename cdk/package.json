@@ -38,7 +38,8 @@
     "deploy:admin-player-get": "cdk deploy ${envName:?Set envName=<env> first}-ApiHgAdminPlayerGet -c config=$envName",
     "deploy:admin-player-limits-update": "cdk deploy ${envName:?Set envName=<env> first}-ApiHgAdminPlayerLimitsUpdate -c config=$envName",
     "deploy:admin-player-block": "cdk deploy ${envName:?Set envName=<env> first}-ApiHgAdminPlayerBlock -c config=$envName",
-    "deploy:admin-player-unblock": "cdk deploy ${envName:?Set envName=<env> first}-ApiHgAdminPlayerUnblock -c config=$envName"
+    "deploy:admin-player-unblock": "cdk deploy ${envName:?Set envName=<env> first}-ApiHgAdminPlayerUnblock -c config=$envName",
+    "deploy:admin-payments-resolve": "cdk deploy ${envName:?Set envName=<env> first}-ApiHgAdminPaymentsResolve -c config=$envName"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

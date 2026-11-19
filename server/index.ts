@@ -32,6 +32,7 @@ import { handler as adminPlayerGet } from '../lambdas/admin-player-get';
 import { handler as adminPlayerLimitsUpdate } from '../lambdas/admin-player-limits-update';
 import { handler as adminPlayerBlock } from '../lambdas/admin-player-block';
 import { handler as adminPlayerUnblock } from '../lambdas/admin-player-unblock';
+import { handler as adminPaymentsResolve } from '../lambdas/admin-payments-resolve';
 import { handler as webhook } from '../lambdas/webhook';
 
 const HANDLERS: Record<string, Handler> = {
@@ -52,6 +53,7 @@ const HANDLERS: Record<string, Handler> = {
   'admin-player-limits-update': adminPlayerLimitsUpdate as Handler,
   'admin-player-block': adminPlayerBlock as Handler,
   'admin-player-unblock': adminPlayerUnblock as Handler,
+  'admin-payments-resolve': adminPaymentsResolve as Handler,
   webhook: webhook as unknown as Handler,
 };
 

@@ -73,7 +73,7 @@ export async function upstream<T = unknown>(product: string, req: UpstreamReques
         request: req.body === undefined ? undefined : maskBody(req.body),
         body: typeof data === 'string' ? data.slice(0, 500) : data,
       });
-      throw new UpstreamError(product, res.status);
+      throw new UpstreamError(product, res.status, errorCode(data));
     }
     log.debug('upstream ok', { product, method: req.method ?? 'GET', path: safePath(req.url), status: res.status, ms: Date.now() - started });
     return { status: res.status, data: data as T };
@@ -115,6 +115,14 @@ export function maskBody(value: unknown, depth = 0): unknown {
     return out;
   }
   return typeof value === 'string' && value.length > 2000 ? `${value.slice(0, 2000)}…` : value;
+}
+
+/** The machine-readable code of an error body, when the upstream sends one (`code`, `errorCode`, `error.code`). */
+function errorCode(data: unknown): string | null {
+  if (!data || typeof data !== 'object') return null;
+  const d = data as Record<string, unknown>;
+  const direct = d.code ?? d.errorCode ?? (d.error && typeof d.error === 'object' ? (d.error as Record<string, unknown>).code : undefined);
+  return typeof direct === 'string' ? direct : null;
 }
 
 function safePath(url: string): string {

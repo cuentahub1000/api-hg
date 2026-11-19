@@ -183,6 +183,55 @@ export async function createOperation(input: CreateOperationInput, auth: WalletA
   return toOperation(op);
 }
 
+/** The operation created for `externalReference`, or null. Resolves a retry after a lost answer. */
+export async function findByReference(externalReference: string, auth: WalletAuth): Promise<WalletOperation | null> {
+  const list = orThrow(await invoke<Array<Record<string, unknown>>>({ auth, slug: 'operations-find', method: 'POST', path: '/api/v1/operations/find', body: { externalReference, limit: 1 } }), 'operations-find');
+  return list.length > 0 ? toOperation(list[0]) : null;
+}
+
+/**
+ * `createOperation`, safe to repeat: the wallet resumes a `CREATED` operation
+ * with the same reference and refuses one that already went further; in that
+ * case the existing operation is looked up and returned instead of failing.
+ */
+export async function createOrFind(input: CreateOperationInput, auth: WalletAuth): Promise<WalletOperation> {
+  try {
+    return await createOperation(input, auth);
+  } catch (err) {
+    if (!(err instanceof UpstreamError) || (err.upstreamStatus !== 409 && err.upstreamStatus !== 422)) throw err;
+    const existing = await findByReference(input.externalReference, auth);
+    if (!existing) throw err;
+    log.info('wallet operation already existed', { reference: input.externalReference, operation: existing.identifier, status: existing.status });
+    return existing;
+  }
+}
+
+const DONE: Record<WalletEvent, string[]> = {
+  COMPLETE: ['COMPLETED'],
+  CANCEL: ['CANCELED', 'CANCELLED', 'REJECTED'],
+  ACCEPT: ['ACCEPTED', 'COMPLETED'],
+  REJECT: ['REJECTED', 'CANCELED', 'CANCELLED'],
+};
+
+/**
+ * `transition`, safe to repeat: when the wallet refuses because the operation
+ * is no longer in a state that takes the event, and it already reached the
+ * state the event leads to, that counts as done.
+ */
+export async function ensureTransition(operationId: string, event: WalletEvent, externalReference: string, auth: WalletAuth): Promise<WalletOperation> {
+  try {
+    return await transition(operationId, event, auth);
+  } catch (err) {
+    if (!(err instanceof UpstreamError) || (err.upstreamStatus !== 409 && err.upstreamStatus !== 422)) throw err;
+    const current = await findByReference(externalReference, auth);
+    if (current && DONE[event].includes(current.status.toUpperCase())) {
+      log.info('wallet operation already transitioned', { operation: operationId, event, status: current.status });
+      return current;
+    }
+    throw err;
+  }
+}
+
 export async function transition(operationId: string, event: WalletEvent, auth: WalletAuth): Promise<WalletOperation> {
   const op = orThrow(await invoke<Record<string, unknown>>({
     auth, slug: 'operations-transition', method: 'POST',
@@ -249,6 +298,11 @@ async function mockInvoke<T>(call: Call): Promise<Envelope<T>> {
     ))!;
     log.info('sandbox wallet operation', { op: identifier, type: op.type, amount: b.amount, account: a.id });
     return { ok: true, data: opView(op) as T };
+  }
+  if (call.slug === 'operations-find') {
+    const b = call.body as { externalReference?: string };
+    const rows = await db.query<MockOperation>('SELECT * FROM sandbox_wallet_operation WHERE external_reference = $1', [b.externalReference ?? '']);
+    return { ok: true, data: rows.map(opView) as T };
   }
   if (call.slug === 'operations-transition') {
     const op = await db.one<MockOperation>('SELECT * FROM sandbox_wallet_operation WHERE identifier = $1', [call.pathParams?.id ?? '']);

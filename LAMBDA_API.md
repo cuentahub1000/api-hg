@@ -55,7 +55,9 @@ HMAC.
 `LIMIT_EXCEEDED` (422, generic: the player is never told which limit),
 `REQUEST_IN_PROGRESS` (422, `detail` names the blocking withdrawal), `BLOCKED`
 (403, an operator blocked this kind for the player; tell them to contact
-support), `INSUFFICIENT_FUNDS` (422), `UPSTREAM_ERROR` (502),
+support), `INSUFFICIENT_FUNDS` (422), `PROVIDER_FUNDS` (422, operator
+approve only: the payout account cannot cover the transfer, the withdrawal
+stays `awaiting_approval`), `UPSTREAM_ERROR` (502),
 `NOT_CONFIGURED` (503), `PAYMENTS_ERROR` (500). A 5xx message is always the
 generic "There was an error processing the request".
 
@@ -76,6 +78,7 @@ generic "There was an error processing the request".
 | `admin-settings-update` | `/api/v1/payments/admin/settings` | PUT | operator (root only) |
 | `admin-payments-cancel` | `/api/v1/payments/admin/payments/{id}/cancel` | POST | operator |
 | `admin-reconcile` | `/api/v1/payments/admin/reconcile` | POST | operator |
+| `admin-payments-resolve` | `/api/v1/payments/admin/payments/{id}/resolve` | POST | operator |
 | `admin-player-get` | `/api/v1/payments/admin/players/{partyId}` | GET | operator |
 | `admin-player-limits-update` | `/api/v1/payments/admin/players/{partyId}/limits` | PUT | operator |
 | `admin-player-block` | `/api/v1/payments/admin/players/{partyId}/blocks` | POST | operator |
@@ -141,7 +144,8 @@ expired or cancelled deposit leaves no trace in the wallet. With `holdDeposits` 
 
 ```
 awaiting_approval ──approve──▶ processing ──(bank transfer done)──▶ completed
-   │  ▲                             └──(provider error)──▶ failed  (money released)
+   │  ▲  ▲                          ├──(provider error)──▶ failed  (money released)
+   │  │  └──(provider account short of funds: back here, money still blocked)
    │  └──(hold off: created directly as processing)
    ├──reject──▶ rejected   (money released)
    └──cancel──▶ cancelled  (player, only while awaiting_approval; money released)
@@ -151,6 +155,41 @@ The amount is **blocked in the wallet the moment the request is accepted**
 (a pending withdrawal operation), so it cannot be bet or withdrawn twice.
 `completed` finalises the wallet operation; `rejected`, `failed` and
 `cancelled` cancel it and the blocked amount returns to the balance.
+
+#### Every failure has a way out
+
+Each step is written so that stopping anywhere leaves a state that resolves
+on its own on the next webhook, re-check or retry; nothing needs a manual
+database fix.
+
+* **Wallet refuses or does not answer** on any step: the row is not changed,
+  the action returns `UPSTREAM_ERROR` and can be repeated. Wallet operations
+  are created and moved with the payment id as their reference, so a repeat
+  finds the existing operation instead of creating or moving a second one.
+* **Provider refuses the transfer** (approve): `failed`, blocked amount
+  released, reason in the payment's `logs`. One refusal is different: when the
+  **provider account is short of funds**, the withdrawal goes back to
+  `awaiting_approval` with the money still blocked (event
+  `provider_funds_short`, `errorCode: PROVIDER_FUNDS`), to be approved again
+  once the account is funded. `withdrawalAccountId` in the settings picks the
+  provider account per tenant.
+* **Provider does not answer, or the answer is lost** (timeout, 5xx, crash
+  after it accepted): the withdrawal stays `processing` **without a provider
+  reference** and the money stays blocked; the event trail shows
+  `submit_unknown`. The payment id is the provider's external id, unique per
+  account, so the request is re-sent by the re-check (`payments-get`,
+  `admin-reconcile`) and can never make a second transfer: it succeeds (the
+  first never existed), is refused (`failed`, money released) or is reported
+  as a duplicate (`submit_duplicate`: the first exists). Its reference then
+  arrives with the provider's webhook, or an operator attaches it with
+  `admin-payments-resolve`.
+* **Webhook processing fails**: the provider's retry of the same delivery is
+  processed again (only successfully processed deliveries are treated as
+  duplicates), and the re-check covers a delivery that never comes back.
+* **Transfer done at the provider but the wallet step failed**: the next
+  webhook or re-check applies the final status again; completing or
+  cancelling an operation that already is completed or cancelled counts as
+  done.
 
 ## Player endpoints
 
@@ -275,7 +314,10 @@ player.
 Body `{ "note": "..." }` (optional on approve, required on reject, max 500).
 Only `awaiting_approval` payments; otherwise 422 `INVALID_STATE`; a decision
 that lost a race is 409 `CONFLICT`. Approving a deposit credits the wallet;
-approving a withdrawal submits the bank transfer. Rejecting releases the
+approving a withdrawal submits the bank transfer; when the payout account at
+the provider cannot cover it, the withdrawal stays `awaiting_approval` with the
+money still blocked and the call answers 422 `PROVIDER_FUNDS`, so the operator
+knows to fund the account and approve again. Rejecting releases the
 withdrawal's blocked amount; a rejected deposit never touches the wallet (the
 money the payer sent stays with the operator to refund outside the platform;
 the event trail records it). Returns the `Payment`.
@@ -304,6 +346,7 @@ read; only a **root** operator (empty chain) may update, others get 403.
   "dailyDepositMax": null, "weeklyDepositMax": null, "monthlyDepositMax": null,       // rolling 24 h / 7 d / 30 d caps; null = none
   "dailyWithdrawalMax": null, "weeklyWithdrawalMax": null, "monthlyWithdrawalMax": null,
   "maxOpenWithdrawals": 1,
+  "withdrawalAccountId": null,      // provider account the bank transfers are paid from; null = the deployment's account
   "currency": "ARS",                // read-only, from the deployment
   "updatedAt": "...", "updatedBy": "<partyId>" | null
 }
@@ -349,7 +392,24 @@ by a root operator.
 ### `admin-reconcile` — POST `/api/v1/payments/admin/reconcile`
 
 Re-checks with the provider every open payment of the caller's subtree that
-has not changed for 10 minutes. `{ "checked": 12, "updated": 3 }`.
+has not changed for 10 minutes, and re-sends the transfer request of every
+`processing` withdrawal that has no provider reference yet.
+`{ "checked": 12, "updated": 3 }`.
+
+### `admin-payments-resolve` — POST `.../{id}/resolve`
+
+For a withdrawal that is `processing` **without a provider reference** (its
+`Payment` has `providerRef: null`; the event trail shows `submit_unknown` or
+`submit_duplicate`). Two bodies:
+
+```jsonc
+{ "providerRef": "<the provider's transaction id>", "note": "found by external id" }   // attach it; the transfer's state is then read and applied
+{ "outcome": "failed", "note": "no transfer exists at the provider" }                  // close it; the blocked amount returns to the player
+```
+
+The operator finds the transfer at the provider by its external id, which is
+the payment `id`. Returns the `Payment`. 422 `INVALID_STATE` for any other
+payment or when a reference already exists (those resolve on their own).
 
 ## Webhook — POST `/api/v1/payments/webhook`
 

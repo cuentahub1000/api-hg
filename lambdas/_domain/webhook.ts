@@ -14,7 +14,7 @@ import { getConfig } from '../_common/config';
 import { AuthError, NotConfiguredError, PaymentsError, ValidationError } from '../_common/errors';
 import { maskBody } from '../_common/http';
 import { log } from '../_common/logger';
-import { applyCheckout, applyPayout } from './payments';
+import { adoptPayoutRef, applyCheckout, applyPayout } from './payments';
 import { paymentIdForRef, recordWebhook } from './provider-log';
 import { verifySignature } from './providers/hg';
 
@@ -60,7 +60,7 @@ async function process(rawBody: string, signatureHeader: string | undefined, tra
   const ref = str(body.id);
   if (ref) trace.paymentId = await paymentIdForRef('hg', ref);
 
-  const inserted = await db.one<{ id: string }>(
+  let inserted = await db.one<{ id: string }>(
     `INSERT INTO webhook_inbox (topic, event_type, provider_ref, dedupe_key, body, signature_ok)
      VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (dedupe_key) DO NOTHING RETURNING id`,
     [topic || null, eventType || null, ref || null, dedupe, rawBody, ok],
@@ -69,10 +69,22 @@ async function process(rawBody: string, signatureHeader: string | undefined, tra
     log.warn('webhook signature rejected', { topic, eventType, ref, signed: Boolean(signatureHeader) });
     throw new AuthError('invalid webhook signature');
   }
-  if (!inserted) return { accepted: true, duplicate: true, handled: 'duplicate' };
+  if (!inserted) {
+    // Seen before. Processed: answer 200, no side effects. Not processed (the
+    // earlier attempt failed): the provider's retry is the recovery, run it again.
+    const earlier = await db.one<{ id: string; processed_at: string | null }>('SELECT id, processed_at FROM webhook_inbox WHERE dedupe_key = $1', [dedupe]);
+    if (!earlier || earlier.processed_at) return { accepted: true, duplicate: true, handled: 'duplicate' };
+    inserted = { id: earlier.id };
+  }
 
   let handled = 'ignored';
   try {
+    if (topic === 'TRANSACTION_REQUEST' && ref) {
+      // A transfer we hold no reference for yet (its creation got no answer):
+      // the provider echoes our payment id as its external id.
+      const paymentId = str(body.externalID) || str((body.data as Record<string, unknown> | undefined)?.paymentId);
+      if (paymentId && await adoptPayoutRef(paymentId, ref)) trace.paymentId = paymentId;
+    }
     if (topic === 'CHECKOUT' && ref) {
       const status = str(body.status) || eventType.replace(/^checkout\./, '');
       await applyCheckout(ref, status, 'provider', { eventType, transactionId: body.transactionId ?? null });

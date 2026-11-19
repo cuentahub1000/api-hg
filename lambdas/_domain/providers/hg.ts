@@ -12,7 +12,7 @@
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { getConfig, type ProviderConfig } from '../../_common/config';
-import { NotConfiguredError } from '../../_common/errors';
+import { NotConfiguredError, UpstreamError } from '../../_common/errors';
 import { upstream } from '../../_common/http';
 import { recordRequest } from '../provider-log';
 import type { Checkout, CreateCheckoutInput, CreatePayoutInput, PaymentProvider, Payout } from './index';
@@ -76,7 +76,7 @@ export const hgProvider: PaymentProvider = {
     const p = await cfg();
     if (p.mode === 'mock') return sandboxCreatePayout({ amount: input.amount, destination: `${input.destination.type}:${input.destination.value}` });
     const body: Record<string, unknown> = {
-      accountId: p.accountId,
+      accountId: input.accountId ?? p.accountId,
       amount: Number(input.amount.toFixed(2)),
       externalID: input.paymentId,
       concept: input.concept ?? 'Withdrawal',
@@ -105,6 +105,14 @@ export const hgProvider: PaymentProvider = {
       case 'pending': return 'pending';
       default: return null;
     }
+  },
+
+  payoutFailure(err) {
+    if (!(err instanceof UpstreamError)) return 'unknown';
+    if (err.upstreamStatus === 409 && err.upstreamCode === 'DUPLICATE_EXTERNAL_ID') return 'duplicate';
+    if (err.upstreamStatus >= 400 && err.upstreamStatus < 500 && /INSUFFICIENT|BALANCE/i.test(err.upstreamCode ?? '')) return 'insufficient';
+    if (err.upstreamStatus >= 400 && err.upstreamStatus < 500) return 'refused';
+    return 'unknown';
   },
 
   mapPayoutStatus(status) {

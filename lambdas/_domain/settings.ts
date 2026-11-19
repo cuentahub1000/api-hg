@@ -29,6 +29,7 @@ interface Row {
   weekly_withdrawal_max: string | null;
   monthly_withdrawal_max: string | null;
   max_open_withdrawals: number;
+  withdrawal_account_id: string | null;
   updated_at: string;
   updated_by: string | null;
 }
@@ -53,9 +54,13 @@ export const DEFAULTS: WritableSettings = {
   weeklyWithdrawalMax: null,
   monthlyWithdrawalMax: null,
   maxOpenWithdrawals: 1,
+  withdrawalAccountId: null,
 };
 
 export const WRITABLE = Object.keys(DEFAULTS) as Array<keyof WritableSettings>;
+/** Text fields that accept `null`. */
+export const NULLABLE_TEXT: ReadonlyArray<keyof WritableSettings> = ['withdrawalAccountId'];
+const TEXT_RULES: Record<string, RegExp> = { withdrawalAccountId: /^[A-Za-z0-9_-]{1,128}$/ };
 /** Amount fields that accept `null` (= no cap). */
 export const NULLABLE_AMOUNTS: ReadonlyArray<keyof WritableSettings> = [
   'holdDepositsAbove', 'holdWithdrawalsAbove',
@@ -84,6 +89,7 @@ export async function getSettings(tenant: string): Promise<Settings> {
     weeklyWithdrawalMax: money(row.weekly_withdrawal_max),
     monthlyWithdrawalMax: money(row.monthly_withdrawal_max),
     maxOpenWithdrawals: row.max_open_withdrawals,
+    withdrawalAccountId: row.withdrawal_account_id,
     currency: cfg.currency,
     updatedAt: row.updated_at,
     updatedBy: row.updated_by,
@@ -111,6 +117,9 @@ export function mergeFields<T extends Record<string, unknown>>(current: T, body:
     } else if (key === 'note') {
       if (typeof raw !== 'string' || raw.length > 500) errors.push(`'${key}' must be a string of at most 500 characters`);
       else next[key] = raw;
+    } else if (key in TEXT_RULES) {
+      if (typeof raw !== 'string' || !TEXT_RULES[key].test(raw)) errors.push(`'${key}' is not a valid identifier`);
+      else next[key] = raw;
     } else {
       const n = typeof raw === 'number' ? raw : NaN;
       if (!Number.isFinite(n) || n < 0 || n > 1e12) errors.push(`'${key}' must be a non-negative amount`);
@@ -126,14 +135,14 @@ export function mergeFields<T extends Record<string, unknown>>(current: T, body:
 
 export async function updateSettings(tenant: string, body: Record<string, unknown>, by: string): Promise<Settings> {
   const current = await getSettings(tenant);
-  const next = mergeFields(current as unknown as Record<string, unknown>, body, DEFAULTS as unknown as Record<string, unknown>, NULLABLE_AMOUNTS as string[]) as unknown as Settings;
+  const next = mergeFields(current as unknown as Record<string, unknown>, body, DEFAULTS as unknown as Record<string, unknown>, [...NULLABLE_AMOUNTS, ...NULLABLE_TEXT] as string[]) as unknown as Settings;
   const opt = (v: number | null) => (v === null ? null : moneyParam(v));
   await db.execute(
     `INSERT INTO payment_settings (tenant, deposits_enabled, withdrawals_enabled, hold_deposits, hold_deposits_above,
        hold_withdrawals, hold_withdrawals_above, min_deposit, max_deposit, min_withdrawal, max_withdrawal,
        daily_deposit_max, weekly_deposit_max, monthly_deposit_max, daily_withdrawal_max, weekly_withdrawal_max, monthly_withdrawal_max,
-       max_open_withdrawals, updated_at, updated_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18, now(), $19)
+       max_open_withdrawals, withdrawal_account_id, updated_at, updated_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$20, now(), $19)
      ON CONFLICT (tenant) DO UPDATE SET
        deposits_enabled = EXCLUDED.deposits_enabled, withdrawals_enabled = EXCLUDED.withdrawals_enabled,
        hold_deposits = EXCLUDED.hold_deposits, hold_deposits_above = EXCLUDED.hold_deposits_above,
@@ -142,13 +151,14 @@ export async function updateSettings(tenant: string, body: Record<string, unknow
        min_withdrawal = EXCLUDED.min_withdrawal, max_withdrawal = EXCLUDED.max_withdrawal,
        daily_deposit_max = EXCLUDED.daily_deposit_max, weekly_deposit_max = EXCLUDED.weekly_deposit_max, monthly_deposit_max = EXCLUDED.monthly_deposit_max,
        daily_withdrawal_max = EXCLUDED.daily_withdrawal_max, weekly_withdrawal_max = EXCLUDED.weekly_withdrawal_max, monthly_withdrawal_max = EXCLUDED.monthly_withdrawal_max,
-       max_open_withdrawals = EXCLUDED.max_open_withdrawals, updated_at = now(), updated_by = EXCLUDED.updated_by`,
+       max_open_withdrawals = EXCLUDED.max_open_withdrawals, withdrawal_account_id = EXCLUDED.withdrawal_account_id,
+       updated_at = now(), updated_by = EXCLUDED.updated_by`,
     [tenant, next.depositsEnabled, next.withdrawalsEnabled, next.holdDeposits, opt(next.holdDepositsAbove),
       next.holdWithdrawals, opt(next.holdWithdrawalsAbove), moneyParam(next.minDeposit), moneyParam(next.maxDeposit),
       moneyParam(next.minWithdrawal), moneyParam(next.maxWithdrawal),
       opt(next.dailyDepositMax), opt(next.weeklyDepositMax), opt(next.monthlyDepositMax),
       opt(next.dailyWithdrawalMax), opt(next.weeklyWithdrawalMax), opt(next.monthlyWithdrawalMax),
-      next.maxOpenWithdrawals, by],
+      next.maxOpenWithdrawals, by, next.withdrawalAccountId],
   );
   return getSettings(tenant);
 }

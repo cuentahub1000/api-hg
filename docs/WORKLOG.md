@@ -160,3 +160,19 @@ Not committed, not deployed.
   database (`AUTH_DB_*` from `/<env>/ApiAuthDatabaseReadOnly*`, secret
   `<env>/ApiAuthDatabaseReadOnlySecret`); api-security stays for the operator
   feature check. New required rows in ssm-status. All function stacks redeploy.
+
+- Recovery for every failure path. Wallet operations: all changes run as the
+  service; `createOrFind` and `ensureTransition` make repeats idempotent
+  (operations-find by `pay-<id>`). Payouts: `processing` is written before the
+  provider call; failures are classified by the provider (`payoutFailure`:
+  refused / duplicate / unknown); unknown or duplicate keeps the money blocked
+  and the re-check re-sends (external id unique per account at the provider);
+  webhooks attach a missing reference by `externalID` / `data.paymentId`;
+  new `admin-payments-resolve` for the operator. Final provider statuses are
+  re-applied while the row is open. Failed webhook deliveries are reprocessed
+  on the provider's retry. `UpstreamError` carries the provider error code.
+
+- Settings: `withdrawalAccountId` (sql/009) picks the provider account the
+  transfers are paid from, per tenant. A payout refused for insufficient funds
+  at the provider puts the withdrawal back to `awaiting_approval` (money still
+  blocked) instead of failing it.

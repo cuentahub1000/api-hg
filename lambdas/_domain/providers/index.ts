@@ -37,7 +37,7 @@ export interface Payout {
 }
 
 export interface CreateCheckoutInput { paymentId: string; amount: number; payer?: Payer; locale?: string; country: string; successUrl: string; cancelUrl: string }
-export interface CreatePayoutInput { paymentId: string; amount: number; destination: Destination; concept?: string }
+export interface CreatePayoutInput { paymentId: string; amount: number; destination: Destination; concept?: string; /** provider account to pay from; default = the deployment's */ accountId?: string | null }
 
 export interface PaymentProvider {
   readonly name: string;
@@ -51,6 +51,15 @@ export interface PaymentProvider {
   mapCheckoutStatus(status: string): 'paid' | 'under_review' | 'rejected' | 'expired' | 'cancelled' | 'pending' | null;
   /** Our outcome for one of the provider's payout statuses; null = still on its way. */
   mapPayoutStatus(status: string): 'done' | 'failed' | 'cancelled' | null;
+  /**
+   * What a failed `createPayout` means: `refused` = the provider said no and holds
+   * nothing (safe to release the money); `insufficient` = refused because the
+   * provider account lacks the funds (nothing exists; worth repeating once the
+   * account is funded); `duplicate` = it already holds this transfer from an
+   * earlier attempt (same payment id); `unknown` = no usable answer (timeout,
+   * 5xx), the transfer may or may not exist.
+   */
+  payoutFailure(err: unknown): 'refused' | 'insufficient' | 'duplicate' | 'unknown';
 }
 
 let selected: PaymentProvider | undefined;
