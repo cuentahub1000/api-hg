@@ -136,3 +136,8 @@ User: "this module is handling money so security checks are really important".
 - `ssm-status.sh`: api-security platform rows + secret required. Docs: LAMBDA_API "Security, on every call", README, infra inventory, CLAUDE rules. Tests: `tests/unit/security.test.ts`.
 - front-self: the forms send the player's account id (`CurrentUser.accountId`).
 Not committed, not deployed.
+
+- Deposits no longer create a wallet operation at request time (the player's
+  token lacks the wallet feature and a pending credit was unwanted). The
+  operation is created and completed together in `completeDeposit`, as the
+  service, when the provider confirms. Withdrawals unchanged (block at creation).

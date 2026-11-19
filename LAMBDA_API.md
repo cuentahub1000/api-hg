@@ -131,9 +131,10 @@ pending ──(payer pays)──▶ awaiting_approval ──approve──▶ com
    └──▶ cancelled      (checkout cancelled)
 ```
 
-Money reaches the wallet balance **only** at `completed`. Between creation and
-completion the wallet holds a pending deposit operation that is visible but
-not spendable. With `holdDeposits` off (and the amount under
+Money reaches the wallet balance **only** at `completed`. Nothing is created
+in the wallet before that: the wallet deposit operation is created and
+completed in one step once the provider confirms the payment, so a pending,
+expired or cancelled deposit leaves no trace in the wallet. With `holdDeposits` off (and the amount under
 `holdDepositsAbove`, when set) a paid deposit goes straight to `completed`.
 
 ### Withdrawal lifecycle
@@ -236,7 +237,7 @@ Body `{ "note": "..." }` (optional on approve, required on reject, max 500).
 Only `awaiting_approval` payments; otherwise 422 `INVALID_STATE`; a decision
 that lost a race is 409 `CONFLICT`. Approving a deposit credits the wallet;
 approving a withdrawal submits the bank transfer. Rejecting releases the
-withdrawal's blocked amount or cancels the pending deposit operation (the
+withdrawal's blocked amount; a rejected deposit never touches the wallet (the
 money the payer sent stays with the operator to refund outside the platform;
 the event trail records it). Returns the `Payment`.
 

@@ -229,7 +229,7 @@ export async function createDeposit(ctx: SecurityContext, input: CreateDepositIn
   const prov = await provider();
   const id = randomUUID();
   const storedPayer = input.payer ? { name: input.payer.name, email: input.payer.email } : null;
-  // 1. our row, so the provider and wallet references always have a home
+  // 1. our row, so the provider reference always has a home
   await db.execute(
     `INSERT INTO payment (id, kind, status, tenant, party_id, username, chain, account_id, currency, amount, provider, payer, document_hash, client)
      VALUES ($1, 'deposit', 'pending', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
@@ -238,19 +238,9 @@ export async function createDeposit(ctx: SecurityContext, input: CreateDepositIn
   );
   await addEvent(db, id, 'player', 'created', { amount: input.amount, ip: ctx.ip, userAgent: ctx.userAgent });
 
-  // 2. the wallet's pending deposit (visible, not spendable)
+  // 2. the hosted checkout. No wallet operation yet: the wallet is credited
+  // only when the provider confirms the payment (completeDeposit).
   let row: PaymentRow;
-  try {
-    const op = await wallet.createOperation({ kind: 'deposit', accountId: account.id, amount: input.amount, externalReference: `pay-${id}` }, auth);
-    row = await patch(id, { wallet_operation_id: op.identifier, wallet_status: op.status });
-    await addEvent(db, id, 'system', 'wallet_pending', { operation: op.identifier });
-  } catch (err) {
-    await patch(id, { status: 'failed', error_code: 'WALLET' });
-    await addEvent(db, id, 'system', 'failed', { step: 'wallet' });
-    throw err;
-  }
-
-  // 3. the hosted checkout
   try {
     const q = `payment=${encodeURIComponent(id)}`;
     const co = await prov.createCheckout({
@@ -261,7 +251,6 @@ export async function createDeposit(ctx: SecurityContext, input: CreateDepositIn
     await addEvent(db, id, 'system', 'checkout_opened', { ref: co.id });
     row = (await rowById(id))!;
   } catch (err) {
-    await cancelWalletQuietly(row, 'provider', auth);
     await patch(id, { status: 'failed', error_code: 'PROVIDER' });
     await addEvent(db, id, 'system', 'failed', { step: 'provider' });
     throw err;
@@ -336,7 +325,7 @@ export async function approve(ctx: SecurityContext, id: string, note: string | u
   assertStatus(row, ['awaiting_approval']);
   const actor = `operator:${ctx.partyId}`;
   const auth = asCaller(ctx);
-  if (row.kind === 'deposit') return adminView(await completeDeposit(row, auth, actor, note ?? null));
+  if (row.kind === 'deposit') return adminView(await completeDeposit(row, actor, note ?? null));
   // withdrawal: mark the decision first (lock), then submit the bank transfer
   const decided = await patch(row.id, { note: note ?? null, decided_by: ctx.partyId }, row.version);
   await addEvent(db, id, actor, 'approved', note ? { note } : undefined);
@@ -360,10 +349,21 @@ export async function cancelDeposit(ctx: SecurityContext, id: string, note: stri
 
 // ---- transitions shared by handlers, webhook and reconcile -----------------
 
-/** Deposit -> completed: credit the wallet, then close the row. */
-async function completeDeposit(row: PaymentRow, auth: WalletAuth, actor: string, note: string | null): Promise<PaymentRow> {
-  if (!row.wallet_operation_id) throw new UpstreamError('wallet', 500);
-  const op = await wallet.transition(row.wallet_operation_id, 'COMPLETE', auth);
+/**
+ * Deposit -> completed: credit the wallet, then close the row. The wallet
+ * operation is created here, once the provider has confirmed the money, and
+ * completed in the same step; both calls run as the service (the trigger is
+ * a webhook, a re-check or an operator approval, never the player).
+ */
+async function completeDeposit(row: PaymentRow, actor: string, note: string | null): Promise<PaymentRow> {
+  let operationId = row.wallet_operation_id;
+  if (!operationId) {
+    const created = await wallet.createOperation({ kind: 'deposit', accountId: row.account_id, amount: Number(row.amount), externalReference: `pay-${row.id}` }, SERVICE);
+    operationId = created.identifier;
+    await patch(row.id, { wallet_operation_id: operationId, wallet_status: created.status });
+    await addEvent(db, row.id, 'system', 'wallet_created', { operation: operationId });
+  }
+  const op = await wallet.transition(operationId, 'COMPLETE', SERVICE);
   const updated = await patch(row.id, {
     status: 'completed', wallet_status: op.status, completed: true, note,
     ...(actor.startsWith('operator:') ? { decided_by: actor.slice('operator:'.length) } : {}),
@@ -373,8 +373,9 @@ async function completeDeposit(row: PaymentRow, auth: WalletAuth, actor: string,
 }
 
 /**
- * Withdrawal or deposit leaves the pipeline without money moving: cancel the
- * wallet operation (releases a blocked withdrawal / drops a pending deposit).
+ * Withdrawal or deposit leaves the pipeline without money moving: a withdrawal's
+ * blocked amount is released by cancelling its wallet operation; a deposit has
+ * no wallet operation before completion, so only the checkout is cancelled.
  */
 async function release(row: PaymentRow, auth: WalletAuth, status: 'rejected' | 'cancelled' | 'failed' | 'expired', actor: string, note: string | null, decidedBy?: string, errorCode?: string, actorName?: string): Promise<PaymentRow> {
   let walletStatus = row.wallet_status;
@@ -432,7 +433,7 @@ export async function applyCheckout(ref: string, status: string, actor: 'provide
         return held;
       }
       await addEvent(db, row.id, actor, 'paid', extra);
-      return completeDeposit((await rowById(row.id))!, auth, 'system', null);
+      return completeDeposit((await rowById(row.id))!, 'system', null);
     }
     case 'under_review': {
       const r = await patch(row.id, { status: 'under_review' });
@@ -519,13 +520,4 @@ export async function reconcile(ctx: SecurityContext, staleMs = 10 * 60_000): Pr
     }
   }
   return { checked: rows.length, updated };
-}
-
-async function cancelWalletQuietly(row: PaymentRow, reason: string, auth: WalletAuth): Promise<void> {
-  if (!row.wallet_operation_id) return;
-  try {
-    await wallet.transition(row.wallet_operation_id, 'CANCEL', auth);
-  } catch (err) {
-    log.error('wallet cancel failed after provider failure', { id: row.id, reason, err: String(err) });
-  }
 }
