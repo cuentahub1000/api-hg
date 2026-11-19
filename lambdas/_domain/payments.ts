@@ -298,7 +298,10 @@ export async function createWithdrawal(ctx: SecurityContext, input: CreateWithdr
   // Block the money now. The wallet refuses when the payout bucket is short.
   let row: PaymentRow;
   try {
-    const op = await wallet.createOperation({ kind: 'withdrawal', accountId: account.id, amount: input.amount, externalReference: `pay-${id}` }, auth);
+    // The account was just verified as the caller's with the caller's own token
+    // (accountFor); the block itself is created as the service, since a player
+    // has no permission to create wallet operations.
+    const op = await wallet.createOperation({ kind: 'withdrawal', accountId: account.id, amount: input.amount, externalReference: `pay-${id}` }, SERVICE);
     row = await patch(id, { wallet_operation_id: op.identifier, wallet_status: op.status });
     await addEvent(db, id, 'system', 'wallet_blocked', { operation: op.identifier });
   } catch (err) {
